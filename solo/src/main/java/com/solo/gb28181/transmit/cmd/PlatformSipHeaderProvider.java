@@ -150,8 +150,10 @@ public class PlatformSipHeaderProvider {
         SipURI fromUri = ADDRESS_FACTORY.createSipURI(deviceGbId(), deviceDomain());
         FromHeader fromHeader = HEADER_FACTORY.createFromHeader(ADDRESS_FACTORY.createAddress(fromUri), fromTag);
 
-        // To: 注册语义 To=自己（deviceGbId@serverGbDomain，registrar 域），无 tag
-        SipURI toUri = ADDRESS_FACTORY.createSipURI(deviceGbId(), p.getServerGbDomain());
+        // To: 与 Request-URI 保持一致（上级编码 @ 上级 IP:端口）。
+        // 曾用「本端编码 @ 上级域」，海康 NCG 会回 400 Bad Request；
+        // 已验证可注册的 voglander 对同一上级的 To 与 Request-URI 完全相同（logs/_capture 抓包）
+        SipURI toUri = ADDRESS_FACTORY.createSipURI(p.getServerGbId(), serverHost);
         ToHeader toHeader = HEADER_FACTORY.createToHeader(ADDRESS_FACTORY.createAddress(toUri), null);
 
         MaxForwardsHeader maxForwards = HEADER_FACTORY.createMaxForwardsHeader(70);
@@ -164,6 +166,9 @@ public class PlatformSipHeaderProvider {
         SipURI contactUri = ADDRESS_FACTORY.createSipURI(deviceGbId(), localIp + ":" + localPort());
         ContactHeader contact = HEADER_FACTORY.createContactHeader(ADDRESS_FACTORY.createAddress(contactUri));
         request.addHeader(contact);
+
+        // GB/T 28181-2022 附录 I 协议版本标识：海康 2022 版按它选择解析分支，缺失或取值异常可能直接回 400
+        request.addHeader(HEADER_FACTORY.createHeader("X-GB-Ver", "3.0"));
 
         ExpiresHeader expiresHeader = HEADER_FACTORY.createExpiresHeader(expires);
         request.addHeader(expiresHeader);

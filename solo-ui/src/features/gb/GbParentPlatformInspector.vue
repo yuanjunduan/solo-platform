@@ -139,6 +139,19 @@
 
         <div class="flex items-center gap-3">
           <Label class="w-20 shrink-0 whitespace-nowrap text-xs text-muted-foreground">
+            鉴权用户名
+          </Label>
+          <div class="flex-1">
+            <Input
+              v-model="form.username"
+              class="h-8 font-mono text-xs"
+              placeholder="留空则用本平台 SIP ID"
+            />
+          </div>
+        </div>
+
+        <div class="flex items-center gap-3">
+          <Label class="w-20 shrink-0 whitespace-nowrap text-xs text-muted-foreground">
             注册密码<span class="ml-0.5 text-destructive">*</span>
           </Label>
           <div class="flex-1">
@@ -346,6 +359,7 @@ type FormState = {
   serverGbDomain: string
   serverIp: string
   serverPort: number
+  username: string
   password: string
   expires: number
   keepTimeout: number
@@ -362,6 +376,7 @@ const buildForm = (): FormState => ({
   serverGbDomain: props.platform?.serverGbDomain ?? '',
   serverIp: props.platform?.serverIp ?? '',
   serverPort: props.platform?.serverPort ?? 5060,
+  username: props.platform?.username ?? '',
   password: props.platform?.password ?? '',
   expires: props.platform?.expires ?? 3600,
   keepTimeout: props.platform?.keepTimeout ?? 60,
