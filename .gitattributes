@@ -2,3 +2,8 @@
 # 该文件需纳入版本控制：构建顺序为 vue-tsc 先于 vite，全新 clone 后首次 build
 # 依赖它提供自动导入符号的全局类型声明。
 solo-ui/src/auto-imports.d.ts text eol=lf
+
+# 启动脚本的换行符必须固定，否则在 core.autocrlf=true 的机器上 clone 后会被转换：
+# .sh 变成 CRLF 后 Git Bash 会报 "\r: command not found"，.bat 保持 CRLF 才符合 Windows 习惯
+*.sh text eol=lf
+*.bat text eol=crlf
