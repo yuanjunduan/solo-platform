@@ -1,6 +1,7 @@
 spring:
   profiles:
-    active: pg
+    # pg = PostgreSQL 部署；local = MySQL 部署（当前环境 192.168.118.229）
+    active: local
   application:
     name: solo
   servlet:
@@ -29,6 +30,14 @@ openapi:
   trusted-proxies: 
 
 logging:
+  # 文件日志：级联目录/报文问题回溯用（IDEA 控制台之外的持久副本）
+  file:
+    name: logs/solo.log
+  pattern:
+    # 时间 级别 [traceId] 线程 类名 : 消息；traceId 由 TraceIdFilter 从 X-Trace-Id 请求头写入 MDC
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} %5p [%X{traceId:-}] [%15.15t] %-40.40logger{39} : %m%n"
+    # 文件日志与控制台同格式（带 traceId），便于报障时直接发文件
+    file: "%d{yyyy-MM-dd HH:mm:ss.SSS} %5p [%X{traceId:-}] [%15.15t] %-40.40logger{39} : %m%n"
   level:
     com.solo: info
     gov.nist: warn

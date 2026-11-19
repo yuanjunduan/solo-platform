@@ -1,6 +1,7 @@
 package com.solo.media.task;
 
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
+import com.solo.common.utils.TraceContext;
 import com.solo.media.entity.MediaServer;
 import com.solo.media.client.ZlmRestClient;
 import com.solo.media.mapper.GbMediaServerMapper;
@@ -91,8 +92,9 @@ public class MediaServerHealthDetector {
             }
 
             // 并行探测：单路 PROBE_TIMEOUT 兜底，总时长 ≈ 单路超时
+            // supplyAsync 走默认 ForkJoinPool，用 wrapSupplier 把探测那轮的 traceId 带过去
             CompletableFuture<Boolean>[] futures = servers.stream()
-                    .map(s -> CompletableFuture.supplyAsync(() -> doProbe(s))
+                    .map(s -> CompletableFuture.supplyAsync(TraceContext.wrapSupplier(() -> doProbe(s)))
                             .orTimeout(PROBE_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS)
                             .exceptionally(ex -> false))
                     .toArray(CompletableFuture[]::new);

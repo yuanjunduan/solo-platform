@@ -7,6 +7,7 @@ import axios, {
 import type { Result, RefreshTokenResponse } from '@/types/api'
 import { useAuthStore } from '@/stores/auth'
 import { toast } from '@/lib/toast'
+import { newTraceId, TRACE_ID_HEADER } from '@/utils/trace'
 
 /** 不需要携带 token 的白名单路径 */
 const WHITE_LIST = ['/auth/login', '/auth/refresh']
@@ -50,6 +51,10 @@ service.interceptors.request.use(
       config.headers.Authorization = `Bearer ${token}`
     }
     config.headers['X-Client-Source'] = 'web'
+    // 链路追踪：同一次请求的重试/刷新沿用原 traceId，便于在后端日志里串起来
+    if (!config.headers[TRACE_ID_HEADER]) {
+      config.headers[TRACE_ID_HEADER] = newTraceId()
+    }
     return config
   },
   (error) => Promise.reject(error)
@@ -125,9 +130,12 @@ service.interceptors.response.use(
         case 429:
           toast.warning(msg || '请求过于频繁，请稍后再试')
           break
-        case 500:
-          toast.error(msg || '服务器内部错误')
+        case 500: {
+          // 带上后端回写的 traceId，用户报障时可直接定位日志
+          const traceId = response.headers?.['x-trace-id'] as string | undefined
+          toast.error(`${msg || '服务器内部错误'}${traceId ? `（traceId: ${traceId}）` : ''}`)
           break
+        }
         default:
           toast.error(msg || '请求失败')
       }

@@ -1,5 +1,6 @@
 package com.solo.config;
 
+import com.solo.common.utils.TraceContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.scheduling.annotation.EnableAsync;
@@ -24,6 +25,8 @@ public class AsyncConfig {
         executor.setKeepAliveSeconds(60);
         executor.setThreadNamePrefix("log-async-");
         executor.setRejectedExecutionHandler(new ThreadPoolExecutor.DiscardOldestPolicy());
+        // 把提交线程的 MDC 带到执行线程，无上下文时（后台任务）自动生成 traceId
+        executor.setTaskDecorator(TraceContext::wrap);
         executor.initialize();
         return executor;
     }
@@ -37,6 +40,7 @@ public class AsyncConfig {
         executor.setKeepAliveSeconds(60);
         executor.setThreadNamePrefix("ai-task-");
         executor.setRejectedExecutionHandler(new ThreadPoolExecutor.AbortPolicy());
+        executor.setTaskDecorator(TraceContext::wrap);
         executor.initialize();
         return executor;
     }
@@ -55,6 +59,7 @@ public class AsyncConfig {
         executor.setKeepAliveSeconds(60);
         executor.setThreadNamePrefix("gb28181-sip-");
         executor.setRejectedExecutionHandler(new ThreadPoolExecutor.CallerRunsPolicy());
+        executor.setTaskDecorator(TraceContext::wrap);
         executor.initialize();
         return executor;
     }

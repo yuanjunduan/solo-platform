@@ -1,5 +1,6 @@
 package com.solo.openapi.auth;
 
+import com.solo.common.utils.TraceContext;
 import com.solo.openapi.config.OpenApiProperties;
 import com.solo.openapi.constant.OpenApiConstants;
 import com.solo.openapi.constant.OpenApiErrorCode;
@@ -16,7 +17,6 @@ import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
-import org.slf4j.MDC;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.stereotype.Component;
@@ -26,7 +26,6 @@ import org.springframework.web.filter.OncePerRequestFilter;
 import java.io.IOException;
 import java.time.Duration;
 import java.time.LocalDateTime;
-import java.util.UUID;
 
 /**
  * 开放 API 鉴权过滤器（仅拦 /open-api/**）：
@@ -74,7 +73,6 @@ public class OpenApiAuthFilter extends OncePerRequestFilter {
                                     FilterChain chain) throws ServletException, IOException {
         long start = System.currentTimeMillis();
         String requestId = resolveRequestId(request);
-        MDC.put("requestId", requestId);
         response.setHeader(OpenApiConstants.HEADER_REQUEST_ID, requestId);
 
         String appKey = request.getHeader(OpenApiConstants.HEADER_APP_KEY);
@@ -167,7 +165,6 @@ public class OpenApiAuthFilter extends OncePerRequestFilter {
             responseWriter.write(response, OpenApiErrorCode.INTERNAL_ERROR, null, requestId);
         } finally {
             audit(request, response, appKey, requestId, clientIp, start, rejectCode, rejectMessage);
-            MDC.remove("requestId");
         }
     }
 
@@ -186,12 +183,21 @@ public class OpenApiAuthFilter extends OncePerRequestFilter {
         }
     }
 
+    /**
+     * 与 TraceIdFilter 统一：入口已按 X-Trace-Id → X-Request-Id 的顺序把值写入 MDC
+     * （都没有则生成），这里直接复用，保证日志 traceId、审计 request_id、响应头三者一致。
+     */
     private String resolveRequestId(HttpServletRequest request) {
+        String traceId = TraceContext.currentTraceId();
+        if (StringUtils.hasText(traceId)) {
+            return traceId;
+        }
+        // 兜底：Filter 顺序被改动导致 MDC 为空时，仍按请求头/新生成兜住
         String header = request.getHeader(OpenApiConstants.HEADER_REQUEST_ID);
         if (StringUtils.hasText(header)) {
-            return header.substring(0, Math.min(header.length(), 36));
+            return header.trim();
         }
-        return UUID.randomUUID().toString().replace("-", "");
+        return TraceContext.newTraceId();
     }
 
     private void audit(HttpServletRequest request, HttpServletResponse response, String appKey,

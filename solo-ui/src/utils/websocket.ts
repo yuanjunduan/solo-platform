@@ -4,6 +4,7 @@
  */
 import { useAuthStore } from '@/stores/auth'
 import type { RefreshTokenResponse } from '@/types/api'
+import { newTraceId, TRACE_ID_HEADER } from '@/utils/trace'
 
 type MessageCallback = (msg: unknown) => void
 
@@ -177,7 +178,10 @@ class WebSocketClient {
     try {
       const res = await fetch('/api/auth/refresh', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json;charset=UTF-8' },
+        headers: {
+          'Content-Type': 'application/json;charset=UTF-8',
+          [TRACE_ID_HEADER]: newTraceId(),
+        },
         body: JSON.stringify({ refreshToken: authStore.refreshToken }),
       })
       if (!res.ok) throw new Error(`refresh failed: ${res.status}`)

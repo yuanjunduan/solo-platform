@@ -1,5 +1,6 @@
 package com.solo.gb28181.config;
 
+import com.solo.common.utils.TraceContext;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -44,6 +45,8 @@ public class Gb28181ThreadPoolConfig {
             return thread;
         };
 
+        // 原生 ThreadPoolExecutor 没有 TaskDecorator 机制，在 execute 处统一补 MDC 传播；
+        // submit 内部也走 execute，因此 Future 任务同样带 traceId
         ThreadPoolExecutor executor = new ThreadPoolExecutor(
                 core,
                 max,
@@ -52,7 +55,12 @@ public class Gb28181ThreadPoolConfig {
                 new LinkedBlockingQueue<>(queue),
                 threadFactory,
                 new ThreadPoolExecutor.CallerRunsPolicy()
-        );
+        ) {
+            @Override
+            public void execute(Runnable command) {
+                super.execute(TraceContext.wrap(command));
+            }
+        };
 
         log.info("[GB28181] 业务线程池初始化完成 core={} max={} queue={}", core, max, queue);
         return executor;
@@ -81,6 +89,7 @@ public class Gb28181ThreadPoolConfig {
         executor.setDaemon(true);
         // setRejectedExecutionHandler 走 setter 即可，Spring 会包装成 RejectedExecutionHandler
         executor.setRejectedExecutionHandler(new ThreadPoolExecutor.CallerRunsPolicy());
+        executor.setTaskDecorator(TraceContext::wrap);
         // 不等待任务在关停时跑完——短任务在 shutdown 之前大多已落库
         executor.setWaitForTasksToCompleteOnShutdown(false);
         executor.setAwaitTerminationSeconds(30);
