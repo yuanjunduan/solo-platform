@@ -50,7 +50,9 @@ const isSelected = () => props.selectedId === props.node.id
       </button>
       <IconFolder class="size-3.5 shrink-0 text-amber-400/80" />
       <span class="min-w-0 flex-1 truncate">{{ node.name }}</span>
-      <span class="font-mono text-[10px] text-muted-foreground/70">{{ node.code }}</span>
+      <span class="shrink-0 font-mono text-[10px] text-muted-foreground/70" :title="node.code">
+        {{ (node.code ?? '').slice(10) }}
+      </span>
       <span class="flex shrink-0 items-center opacity-0 group-hover:opacity-100">
         <button
           type="button"

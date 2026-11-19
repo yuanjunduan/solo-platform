@@ -50,12 +50,43 @@ public final class PlatformCatalogXml {
     }
 
     /**
+     * 构造单条 Catalog 变更事件 NOTIFY body（{@code SumNum=1}、{@code Num=1}）。
+     *
+     * <p>上级对 Catalog NOTIFY 是<b>增量 upsert</b> 语义：全量快照里没出现的节点它不会删，
+     * 撤销必须显式下发 {@code Event=DEL}。因此变更只推受影响的这一个节点，一次一包。</p>
+     *
+     * @param event ADD / UPDATE / DEL / ON / OFF
+     */
+    public static String buildEventNotify(GbParentPlatform platform, String deviceGbId, String sn,
+                                          GbDeviceChannel item, String event) {
+        String charset = platform.getCharacterSet() == null ? "GB2312" : platform.getCharacterSet();
+        StringBuilder sb = new StringBuilder(900);
+        sb.append("<?xml version=\"1.0\" encoding=\"").append(charset).append("\"?>\r\n");
+        sb.append("<Notify>\r\n");
+        sb.append("<CmdType>Catalog</CmdType>\r\n");
+        sb.append("<SN>").append(sn).append("</SN>\r\n");
+        sb.append("<DeviceID>").append(deviceGbId).append("</DeviceID>\r\n");
+        sb.append("<SumNum>1</SumNum>\r\n");
+        appendDeviceList(sb, deviceGbId, List.of(item), event);
+        sb.append("</Notify>\r\n");
+        return sb.toString();
+    }
+
+    /**
      * 渲染 DeviceList 片段（分组 parental=1 + 通道 parental=0），供 Response 与 NOTIFY 复用。
      */
     public static void appendDeviceList(StringBuilder sb, String deviceGbId, List<GbDeviceChannel> items) {
+        appendDeviceList(sb, deviceGbId, items, null);
+    }
+
+    /**
+     * 带事件类型的 DeviceList 片段；{@code event} 为空时与三参版本完全等价。
+     */
+    public static void appendDeviceList(StringBuilder sb, String deviceGbId, List<GbDeviceChannel> items,
+                                        String event) {
         sb.append("<DeviceList Num=\"").append(items.size()).append("\">\r\n");
         for (GbDeviceChannel it : items) {
-            appendItem(sb, it, deviceGbId);
+            appendItem(sb, it, deviceGbId, event);
         }
         sb.append("</DeviceList>\r\n");
     }
@@ -67,7 +98,7 @@ public final class PlatformCatalogXml {
      * <p>通道（parental=0）：DeviceID 优先 exposed_code（平台唯一），回退 channelId；
      *   ParentID = item.parentId（父分组 GB 码；ROOT_PARENT 时兜底到 deviceGbId）。</p>
      */
-    private static void appendItem(StringBuilder sb, GbDeviceChannel it, String deviceGbId) {
+    private static void appendItem(StringBuilder sb, GbDeviceChannel it, String deviceGbId, String event) {
         boolean isGroup = it.getParental() != null && it.getParental() == 1;
         String reportId;
         if (isGroup) {
@@ -94,13 +125,10 @@ public final class PlatformCatalogXml {
             appendTag(sb, "Model", it.getModel());
             appendTag(sb, "Owner", it.getOwner());
         }
-        if (isGroup) {
-            sb.append("<CivilCode></CivilCode>\r\n");
-            sb.append("<Address></Address>\r\n");
-        } else {
-            appendTag(sb, "CivilCode", it.getCivilCode());
-            appendTag(sb, "Address", it.getAddress());
-        }
+        // CivilCode 一律写父节点编码：海康 iSecure Center 按 CivilCode 归属区域，空值或与本级域
+        // 不一致时会把整条 Item 判为无效——表现为「SIP 回 200、上级目录里却看不到节点」。
+        appendTag(sb, "CivilCode", parentCode);
+        appendTag(sb, "Address", it.getAddress());
         sb.append("<Parental>").append(isGroup ? 1 : 0).append("</Parental>\r\n");
         sb.append("<ParentID>").append(parentCode).append("</ParentID>\r\n");
         if (isGroup) {
@@ -110,8 +138,12 @@ public final class PlatformCatalogXml {
             sb.append("<Status>ON</Status>\r\n");
             int type = typeCode(it.getChannelId());
             if (type == 216) {
-                // 216 虚拟组织需要 BusinessGroupID；solo 无独立字段，用本平台 deviceGbId 兜底
-                sb.append("<BusinessGroupID>").append(deviceGbId).append("</BusinessGroupID>\r\n");
+                // 216 虚拟组织必须带所属业务分组（215）编码：优先用加载时沿父链算出的祖先码，
+                // 只有脏数据/缺父链时才回落本平台 ID（回落值不合规，但比缺字段稍好）
+                String businessGroupId = it.getBusinessGroupId();
+                sb.append("<BusinessGroupID>")
+                        .append(businessGroupId != null && !businessGroupId.isBlank() ? businessGroupId : deviceGbId)
+                        .append("</BusinessGroupID>\r\n");
             }
         } else {
             appendTag(sb, "SafetyWay", it.getSafetyWay());
@@ -120,13 +152,42 @@ public final class PlatformCatalogXml {
             appendTag(sb, "IPAddress", it.getIpAddress());
             appendTag(sb, "Port", it.getPort());
             appendTag(sb, "Password", it.getPassword());
-            appendTag(sb, "PTZType", it.getPtzType() == null ? 0 : it.getPtzType());
             boolean online = "ON".equalsIgnoreCase(it.getStatus());
             sb.append("<Status>").append(online ? "ON" : "OFF").append("</Status>\r\n");
             appendTag(sb, "Longitude", it.getLongitude() == null ? 0 : it.getLongitude());
             appendTag(sb, "Latitude", it.getLatitude() == null ? 0 : it.getLatitude());
+            appendPtzInfo(sb, it);
+        }
+        // 变更通知专用：GB/T 28181 的 Event 是 Item 的最后一个元素；全量快照（Response / 主动推送）
+        // 不带本字段——上级若在快照里读不到已删除节点也不会回删，删除必须单独发 DEL
+        if (event != null && !event.isBlank()) {
+            sb.append("<Event>").append(event).append("</Event>\r\n");
         }
         sb.append("</Item>\r\n");
+    }
+
+    /**
+     * 目录结构摘要（供日志核对层级）：{@code 类型:名称(DeviceID)←ParentID}，依次用 {@code |} 分隔。
+     * <p>类型取 20 位码第 11-13 位：215 业务分组 / 216 虚拟组织 / 118 设备 / 132 通道。</p>
+     */
+    public static String describe(List<GbDeviceChannel> items) {
+        if (items == null || items.isEmpty()) {
+            return "空";
+        }
+        StringBuilder sb = new StringBuilder(items.size() * 64);
+        for (GbDeviceChannel it : items) {
+            if (!sb.isEmpty()) {
+                sb.append(" | ");
+            }
+            int type = typeCode(it.getChannelId());
+            // 分组直接用自身码；设备/通道优先暴露码（与 appendItem 的 reportId 取值一致）
+            String reportId = (type == TYPE_BUSINESS_GROUP || type == TYPE_VIRTUAL_ORG)
+                    ? it.getChannelId() : it.getExposedOrChannelId();
+            sb.append(type).append(':').append(it.getName())
+                    .append('(').append(reportId).append(")←")
+                    .append(resolveParentCode(it.getParentId(), "根"));
+        }
+        return sb.toString();
     }
 
     /**
@@ -146,6 +207,12 @@ public final class PlatformCatalogXml {
     /** 根哨兵——item.parent_id == "0" 表无父 */
     private static final String ROOT_PARENT = "0";
 
+    /** 类型段：业务分组 */
+    private static final int TYPE_BUSINESS_GROUP = 215;
+
+    /** 类型段：虚拟组织 */
+    private static final int TYPE_VIRTUAL_ORG = 216;
+
     /** 取 20 位国标码的类型段（第 11-13 位）；非法编码返回 0 */
     private static int typeCode(String gbCode) {
         if (gbCode == null || gbCode.length() < 13) return 0;
@@ -156,12 +223,32 @@ public final class PlatformCatalogXml {
         }
     }
 
+    /**
+     * 写一个可选元素：值为 null 或空白时整段省略。
+     * <p>空标签（如 {@code <CivilCode></CivilCode>}）会被上级当成非法节点，
+     * 一条 Item 里挂多个空标签时整条可能被丢弃。</p>
+     */
     private static void appendTag(StringBuilder sb, String name, Object value) {
-        sb.append('<').append(name).append('>');
-        if (value != null) {
-            sb.append(value instanceof String s ? escapeXml(s) : value.toString());
+        if (value == null) {
+            return;
         }
-        sb.append("</").append(name).append(">\r\n");
+        String text = value instanceof String s ? s : String.valueOf(value);
+        if (text.isBlank()) {
+            return;
+        }
+        sb.append('<').append(name).append('>').append(escapeXml(text)).append("</").append(name).append(">\r\n");
+    }
+
+    /**
+     * 通道的视频类型：GB/T 28181 的 {@code PTZType} 属于 {@code <Info>} 子元素，写在 Item 层
+     * 上级会忽略；取不到时按 1（球机/摄像机）兜底——写 0 会让部分上级把监控点当成非视频通道，
+     * 点播入口直接消失。分组节点不是视频设备，不写本段。
+     */
+    private static void appendPtzInfo(StringBuilder sb, GbDeviceChannel it) {
+        Integer ptz = it.getPtzType();
+        sb.append("<Info>\r\n");
+        sb.append("<PTZType>").append(ptz == null || ptz == 0 ? 1 : ptz).append("</PTZType>\r\n");
+        sb.append("</Info>\r\n");
     }
 
     private static String nullSafe(String s) {

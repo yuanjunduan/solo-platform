@@ -118,6 +118,10 @@ public class GbDeviceChannel {
     @TableField(exist = false)
     private String exposedCode;
 
+    @Schema(description = "所属业务分组（215）国标码；仅级联推送 216 虚拟组织时回填，不落库")
+    @TableField(exist = false)
+    private String businessGroupId;
+
     public String getExposedOrChannelId() {
         return (exposedCode != null && !exposedCode.isBlank()) ? exposedCode : channelId;
     }

@@ -12,6 +12,7 @@ import Input from '@/components/ui/input/Input.vue'
 import GroupTreeNode from './GroupTreeNode.vue'
 import {
   getParentPlatformShareGroupTreeApi,
+  getGbLocalPlatformInfoApi,
   savePlatformGroupApi,
   updatePlatformGroupApi,
   deletePlatformGroupApi,
@@ -66,37 +67,186 @@ const onSelectGroup = (id: string) => {
 const groupFormOpen = ref(false)
 const groupIsEdit = ref(false)
 const groupSaving = ref(false)
-const groupForm = ref<{ id?: string; parentId: string; name: string; code: string }>({
+/** 本平台 SIP 域（编码前 10 位），开弹窗时拉一次；拉不到则该段保持可手输 */
+const localDomain = ref('')
+/** 编码拆三段：域(10) + 类型(215/216) + 序号(7)，避免让运营肉眼数 20 位 */
+const groupForm = ref<{
+  id?: string
+  parentId: string
+  name: string
+  codeDomain: string
+  codeType: string
+  codeSeq: string
+}>({
   parentId: '0',
   name: '',
-  code: '',
+  codeDomain: '',
+  codeType: '215',
+  codeSeq: '',
 })
 const groupErrors = ref<Record<string, string>>({})
 
+/** 拼回 20 位国标码（序号不足 7 位自动左补零） */
+const groupCode = computed(
+  () =>
+    groupForm.value.codeDomain + groupForm.value.codeType + groupForm.value.codeSeq.padStart(7, '0'),
+)
+
+const flattenGroups = (nodes: GbPlatformGroup[]): GbPlatformGroup[] =>
+  nodes.flatMap((n) => [n, ...flattenGroups(n.children ?? [])])
+
+/** 同类型下一个可用序号（7 位）：新建时预填，省去手输与撞码 */
+const nextSeq = (type: string) => {
+  let max = 0
+  for (const g of flattenGroups(tree.value)) {
+    const c = g.code ?? ''
+    if (c.length === 20 && c.slice(10, 13) === type) {
+      max = Math.max(max, Number(c.slice(13)) || 0)
+    }
+  }
+  return String(max + 1).padStart(7, '0')
+}
+
+/** 按 id 在分组树里找节点 */
+const findGroupNode = (
+  id: string,
+  nodes: GbPlatformGroup[] = tree.value,
+): GbPlatformGroup | undefined => {
+  for (const n of nodes) {
+    if (n.id === id) return n
+    const hit = n.children?.length ? findGroupNode(id, n.children) : undefined
+    if (hit) return hit
+  }
+  return undefined
+}
+
+/** 自身 + 全部后代 id：换父时这些都不能选，否则会把分组挂进自己的子树（后端会报成环） */
+const collectSelfAndDescendants = (
+  node: GbPlatformGroup,
+  out = new Set<string>(),
+): Set<string> => {
+  out.add(node.id)
+  for (const c of node.children ?? []) collectSelfAndDescendants(c, out)
+  return out
+}
+
+const blockedParentIds = computed(() => {
+  const id = groupForm.value.id
+  if (!groupIsEdit.value || !id) return new Set<string>()
+  const node = findGroupNode(id)
+  return node ? collectSelfAndDescendants(node) : new Set<string>()
+})
+
+/** 可选父分组：215 只能作根（下拉禁用）；216 可挂 215/216，但排除自身与后代 */
+const parentOptions = computed(() => {
+  if (groupForm.value.codeType === '215') return []
+  const out: { id: string; label: string }[] = []
+  const walk = (nodes: GbPlatformGroup[], depth: number) => {
+    for (const n of nodes) {
+      // 命中的节点整棵子树都不可选，直接跳过即可
+      if (blockedParentIds.value.has(n.id)) continue
+      out.push({ id: n.id, label: `${'　'.repeat(depth)}${n.name} (${n.code})` })
+      if (n.children?.length) walk(n.children, depth + 1)
+    }
+  }
+  walk(tree.value, 0)
+  return out
+})
+
+const ensureLocalDomain = async () => {
+  if (localDomain.value) return
+  try {
+    localDomain.value = (await getGbLocalPlatformInfoApi()).data.domain ?? ''
+  } catch {
+    // 拉不到就让域段保持可编辑，由运营手填
+  }
+}
+
 const onCreateGroup = (parentId: string) => {
   groupIsEdit.value = false
-  groupForm.value = { parentId, name: '', code: '' }
+  // 层级即类型：根节点只能是 215 业务分组，子节点只能是 216 虚拟组织（GB/T 28181-2016 附录 O）
+  const isRoot = !parentId || parentId === '0'
+  const codeType = isRoot ? '215' : '216'
+  groupForm.value = {
+    parentId,
+    name: '',
+    codeDomain: localDomain.value,
+    codeType,
+    codeSeq: nextSeq(codeType),
+  }
   groupErrors.value = {}
   groupFormOpen.value = true
+  // 网速慢/首次进弹窗时域还没拉回，补齐一次
+  if (!localDomain.value) {
+    ensureLocalDomain().then(() => {
+      if (!groupForm.value.codeDomain) groupForm.value.codeDomain = localDomain.value
+    })
+  }
 }
 
 const onEditGroup = (node: GbPlatformGroup) => {
-  groupIsEdit.value = true
+  const code = node.code ?? ''
   groupForm.value = {
     id: node.id,
     parentId: node.parentId,
     name: node.name,
-    code: node.code,
+    codeDomain: code.length === 20 ? code.slice(0, 10) : localDomain.value,
+    codeType: code.length === 20 ? code.slice(10, 13) : '215',
+    codeSeq: code.length === 20 ? code.slice(13) : code,
   }
+  groupIsEdit.value = true
   groupErrors.value = {}
   groupFormOpen.value = true
 }
 
+/* 只允许数字，防止粘进空格/字母后拼接出非法编码 */
+watch(
+  () => groupForm.value.codeSeq,
+  (v) => {
+    const digits = v.replace(/\D/g, '').slice(0, 7)
+    if (digits !== v) groupForm.value.codeSeq = digits
+  },
+)
+watch(
+  () => groupForm.value.codeDomain,
+  (v) => {
+    const digits = v.replace(/\D/g, '').slice(0, 10)
+    if (digits !== v) groupForm.value.codeDomain = digits
+  },
+)
+/* 新建时切类型自动换一个不撞码的序号，编辑时不动用户已有值；父分组随类型联动 */
+watch(
+  () => groupForm.value.codeType,
+  (t, prev) => {
+    if (prev && !groupIsEdit.value) groupForm.value.codeSeq = nextSeq(t)
+    if (!prev) return
+    // 215 业务分组只能作根
+    if (t === '215') {
+      groupForm.value.parentId = '0'
+      return
+    }
+    // 216 必须有父：原父是根或已被排除（自身/后代）时，自动挑第一个可用父
+    const ids = parentOptions.value.map((o) => o.id)
+    if (!ids.includes(groupForm.value.parentId)) {
+      groupForm.value.parentId = ids[0] ?? '0'
+    }
+  },
+)
+
 const validateGroup = () => {
   const e: Record<string, string> = {}
   if (!groupForm.value.name.trim()) e.name = '请输入分组名称'
-  if (!/^\d{10}(215|216)\d{7}$/.test(groupForm.value.code))
-    e.code = '必须为 20 位数字，且第 11-13 位为 215 或 216'
+  const { codeDomain, codeType, codeSeq, parentId } = groupForm.value
+  if (!/^\d{10}$/.test(codeDomain)) {
+    e.code = '前 10 位域编码需为 10 位数字'
+  } else if (!/^\d{1,7}$/.test(codeSeq)) {
+    e.code = '序号需为 1-7 位数字'
+  } else {
+    // GB/T 28181-2016 附录 O：215 业务分组只能作根节点，216 虚拟组织才能逐级嵌套
+    const isRoot = !parentId || parentId === '0'
+    if (codeType === '215' && !isRoot) e.code = '业务分组（215）只能建在根节点下，下级分组请用 216 虚拟组织'
+    if (codeType === '216' && isRoot) e.code = '虚拟组织（216）必须挂在业务分组或上级虚拟组织下'
+  }
   groupErrors.value = e
   return Object.keys(e).length === 0
 }
@@ -105,7 +255,8 @@ const onSubmitGroup = async () => {
   if (groupSaving.value || !validateGroup()) return
   groupSaving.value = true
   try {
-    const { name, code, parentId } = groupForm.value
+    const { name, parentId } = groupForm.value
+    const code = groupCode.value
     if (groupIsEdit.value) {
       await updatePlatformGroupApi(props.platformId, groupForm.value.id!, {
         name,
@@ -118,6 +269,10 @@ const onSubmitGroup = async () => {
       toast.success('新建成功')
     }
     groupFormOpen.value = false
+    // 换父后把新父展开，否则移动过去的节点藏在折叠节点里
+    if (groupIsEdit.value && parentId && parentId !== '0') {
+      expanded.value = new Set(expanded.value).add(parentId)
+    }
     await loadTree()
   } finally {
     groupSaving.value = false
@@ -361,7 +516,7 @@ const setupObservers = () => {
 }
 
 onMounted(async () => {
-  await loadTree()
+  await Promise.all([loadTree(), ensureLocalDomain()])
   setupObservers()
 })
 
@@ -402,12 +557,52 @@ onBeforeUnmount(() => {
             placeholder="分组名称"
             class="h-7 text-xs"
           />
-          <Input
-            v-model="groupForm.code"
-            maxlength="20"
-            placeholder="分组编码（20位）"
-            class="h-7 font-mono text-xs"
-          />
+          <!-- 父分组：仅编辑态可改；215 只能作根，216 排除自身与后代 -->
+          <div v-if="groupIsEdit" class="flex items-center gap-1">
+            <span class="shrink-0 text-[11px] text-muted-foreground">父分组</span>
+            <select
+              v-model="groupForm.parentId"
+              :disabled="groupForm.codeType === '215'"
+              title="215 业务分组只能作根；216 虚拟组织可挂 215 或 216"
+              class="h-7 min-w-0 flex-1 rounded-md border border-border bg-transparent px-1 text-xs outline-none disabled:opacity-60"
+            >
+              <option v-if="groupForm.codeType === '215'" value="0">（根节点）</option>
+              <option v-else-if="!parentOptions.length" disabled value="0">
+                没有可用的父分组，请先建 215 分组
+              </option>
+              <option v-for="o in parentOptions" :key="o.id" :value="o.id">
+                {{ o.label }}
+              </option>
+            </select>
+          </div>
+          <div class="flex items-center gap-1">
+            <Input
+              v-model="groupForm.codeDomain"
+              maxlength="10"
+              :disabled="!!localDomain"
+              placeholder="域编码"
+              title="本平台国标域（前 10 位），自动带入"
+              class="h-7 w-[104px] font-mono text-xs"
+            />
+            <select
+              v-model="groupForm.codeType"
+              title="第 11-13 位：215 业务分组只能作根，216 虚拟组织逐级嵌套"
+              class="h-7 shrink-0 rounded-md border border-border bg-transparent px-1 font-mono text-xs outline-none"
+            >
+              <option value="215">215</option>
+              <option value="216">216</option>
+            </select>
+            <Input
+              v-model="groupForm.codeSeq"
+              maxlength="7"
+              placeholder="0000001"
+              title="后 7 位序号，自动预填下一个可用号"
+              class="h-7 flex-1 font-mono text-xs"
+            />
+          </div>
+          <p class="truncate font-mono text-[10px] text-muted-foreground" :title="groupCode">
+            {{ groupCode }}
+          </p>
           <p v-if="groupErrors.name" class="text-[11px] text-destructive">
             {{ groupErrors.name }}
           </p>

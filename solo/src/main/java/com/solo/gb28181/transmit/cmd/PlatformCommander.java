@@ -86,12 +86,14 @@ public class PlatformCommander {
         String transport = p.getTransport() == null ? "UDP" : p.getTransport();
         String charset = p.getCharacterSet() == null ? "GB2312" : p.getCharacterSet();
         int sn = (int) ((Math.random() * 9 + 1) * 100000);
+        // Status 固定 ON：国标约定在线状态值为 ON，部分上级（如海康 NCG）按此判定本平台在线，
+        // 收到 OK 会判离线并拒下 Catalog 查询
         String xml = "<?xml version=\"1.0\" encoding=\"" + charset + "\"?>\r\n" +
                 "<Notify>\r\n" +
                 "<CmdType>Keepalive</CmdType>\r\n" +
                 "<SN>" + sn + "</SN>\r\n" +
                 "<DeviceID>" + properties.getId() + "</DeviceID>\r\n" +
-                "<Status>OK</Status>\r\n" +
+                "<Status>ON</Status>\r\n" +
                 "</Notify>\r\n";
         try {
             CallIdHeader callId = sipSender.newCallId(localIp, transport);
@@ -209,8 +211,9 @@ public class PlatformCommander {
             String xml = PlatformCatalogXml.buildResponse(platform, properties.getId(), sn, sumNum, pageItems);
             CallIdHeader callId = sipSender.newCallId(localIp, transport);
             Request request = headerProvider.createMessageRequest(platform, xml, callId);
-            log.info("[级联目录] 响应 Catalog 查询 上级平台:{} SN:{} sumNum:{} 分片:{}/{} 条目:{}",
-                    platform.getServerGbId(), sn, sumNum, pageIdx, totalPages, pageItems.size());
+            log.info("[级联目录] 响应 Catalog 查询 上级平台:{} SN:{} sumNum:{} 分片:{}/{} 条目:{} 结构:{}",
+                    platform.getServerGbId(), sn, sumNum, pageIdx, totalPages, pageItems.size(),
+                    PlatformCatalogXml.describe(pageItems));
 
             // 下一片只在还有剩余时才有意义
             int nextIdx = pageIdx + 1;
@@ -386,11 +389,101 @@ public class PlatformCommander {
                 CallIdHeader callId = sipSender.newCallId(localIp, transport);
                 Request request = headerProvider.createNotifyRequest(platform, "catalog", xml, callId);
                 sipSender.send(localIp, request);
-                log.info("[级联订阅] Catalog NOTIFY 推送 上级平台:{} 设备:{} 通道:{} SN:{}",
-                        platform.getServerGbId(), deviceId, target.size(), sn);
+                log.info("[级联订阅] Catalog NOTIFY 推送 上级平台:{} 设备:{} 通道:{} SN:{} 结构:{}",
+                        platform.getServerGbId(), deviceId, target.size(), sn,
+                        PlatformCatalogXml.describe(target));
+                // 报文原文落文件日志：上级目录与实际推送不一致时可直接对照（超过 4KB 截断保护）
+                log.info("[级联订阅] Catalog NOTIFY 报文 上级平台:{} SN:{} 长度:{}:\n{}",
+                        platform.getServerGbId(), sn, xml.length(),
+                        xml.length() > 4000 ? xml.substring(0, 4000) + "\n...(已截断)" : xml);
             } catch (Exception e) {
                 log.warn("[级联订阅] Catalog NOTIFY 失败 上级平台:{} 设备:{} 错误:{}",
                         platform.getServerGbId(), deviceId, e.getMessage(), e);
+            }
+        });
+    }
+
+    /**
+     * 推送单条 Catalog 变更事件（ADD / UPDATE / DEL / ON / OFF）给上级平台。
+     *
+     * <p>为什么必须单条：上级对 Catalog NOTIFY 是<b>增量 upsert</b> 语义——全量快照里
+     * “没出现”的节点它不会删。所以撤销（卸载通道 / 删分组）必须显式下发 DEL，且一次
+     * 一包（{@code SumNum=1}）才能带准 {@code DeviceID}/{@code ParentID}。</p>
+     *
+     * <p>fire-and-forget：NOTIFY 不等上级回 200，失败仅日志（同其它 NOTIFY 推送）。</p>
+     *
+     * @param item  待变更的节点（分组：channelId=分组码、parentId=父分组码；通道：含 exposedCode）
+     * @param event ADD / UPDATE / DEL / ON / OFF
+     */
+    public void sendCatalogEventNotify(GbParentPlatform platform, String deviceGbId,
+                                       GbDeviceChannel item, String event) {
+        if (item == null) {
+            return;
+        }
+        sendCatalogEventNotifyBatch(platform, deviceGbId, List.of(item), event);
+    }
+
+    /** 一条目录变更事件（节点 + 事件类型）；「先删后加」这类混合序列靠它保序 */
+    public record CatalogEvent(GbDeviceChannel item, String event) {
+    }
+
+    /**
+     * 批量推送同一事件类型的多个节点，<b>在同一任务内串行发送</b>。
+     *
+     * <p>删除必须「叶子 → 根」：如果每个节点各自丢进线程池，发送顺序无法保证，
+     * 先发出的父节点会让子节点变孤儿，部分上级会直接忽略后续对孤儿的删除。
+     * 本方法把整批放进一个 gb28181-biz 任务里，按入参顺序逐包发送，每包 SN / Call-ID 各自独立。</p>
+     */
+    public void sendCatalogEventNotifyBatch(GbParentPlatform platform, String deviceGbId,
+                                            List<GbDeviceChannel> items, String event) {
+        if (items == null || items.isEmpty()) {
+            return;
+        }
+        List<CatalogEvent> seq = new ArrayList<>(items.size());
+        for (GbDeviceChannel item : items) {
+            seq.add(new CatalogEvent(item, event));
+        }
+        sendCatalogEventSequence(platform, deviceGbId, seq);
+    }
+
+    /**
+     * 按顺序下发一段混合事件序列（可同时含 DEL 与 ADD），整段跑在同一个 gb28181-biz 任务里。
+     *
+     * <p>分组换父/改码是「先撤旧位置、再按新父链挂回来」，两类事件必须严格先后；
+     * 若分两次提交到线程池，ADD 可能在 DEL 之前发出。每包自生成 SN 与独立 Call-ID。</p>
+     */
+    public void sendCatalogEventSequence(GbParentPlatform platform, String deviceGbId,
+                                         List<CatalogEvent> events) {
+        if (platform == null || events == null || events.isEmpty()) {
+            return;
+        }
+        // 拷贝一份：调用方（如删分组）随后可能改动原列表
+        List<CatalogEvent> target = List.copyOf(events);
+        gb28181BizExecutor.execute(() -> {
+            String localIp = headerProvider.localIp();
+            String transport = platform.getTransport() == null ? "UDP" : platform.getTransport();
+            for (CatalogEvent ev : target) {
+                GbDeviceChannel item = ev == null ? null : ev.item();
+                String event = ev == null ? null : ev.event();
+                if (item == null || event == null || event.isBlank()) {
+                    continue;
+                }
+                String sn = String.valueOf(nextSn());
+                String nodeId = item.getParental() != null && item.getParental() == 1
+                        ? item.getChannelId() : item.getExposedOrChannelId();
+                try {
+                    String xml = PlatformCatalogXml.buildEventNotify(platform, deviceGbId, sn, item, event);
+                    CallIdHeader callId = sipSender.newCallId(localIp, transport);
+                    Request request = headerProvider.createNotifyRequest(platform, "catalog", xml, callId);
+                    sipSender.send(localIp, request);
+                    log.info("[级联目录] 事件推送 上级平台:{} Event:{} 节点:{} 父:{} SN:{}",
+                            platform.getServerGbId(), event, nodeId, item.getParentId(), sn);
+                    log.info("[级联目录] 事件报文 上级平台:{} Event:{} SN:{}:\n{}",
+                            platform.getServerGbId(), event, sn, xml);
+                } catch (Exception e) {
+                    log.warn("[级联目录] 事件推送失败 上级平台:{} Event:{} 节点:{} 错误:{}",
+                            platform.getServerGbId(), event, nodeId, e.getMessage(), e);
+                }
             }
         });
     }

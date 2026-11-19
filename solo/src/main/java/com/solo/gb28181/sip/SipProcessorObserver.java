@@ -96,10 +96,14 @@ public class SipProcessorObserver implements SipListener {
             return;
         }
 
-        // MESSAGE 指令的应答单独打个 info 日志，方便查云台/巡航这些有没有成功
-        if ("MESSAGE".equalsIgnoreCase(method)) {
-            log.info("[SIP应答] MESSAGE → status={} callId={}", status,
-                    callIdHeader == null ? null : callIdHeader.getCallId());
+        // MESSAGE / REGISTER / NOTIFY / SUBSCRIBE 的应答单独打个 info 日志：前者查云台/巡航是否成功，
+        // 登录查注册卡在哪一步，后两者查“发出去的目录变更/订阅是否被上级接受”（海康对非法
+        // Catalog NOTIFY 会回 400，不记就完全看不到）；401 会先在 RegisterResponseProcessor
+        // 打“带认证重发”，这里先把原始响应码留痕
+        if ("MESSAGE".equalsIgnoreCase(method) || "REGISTER".equalsIgnoreCase(method)
+                || "NOTIFY".equalsIgnoreCase(method) || "SUBSCRIBE".equalsIgnoreCase(method)) {
+            log.info("[SIP应答] {} → status={} reason={} callId={}", method.toUpperCase(), status,
+                    response.getReasonPhrase(), callIdHeader == null ? null : callIdHeader.getCallId());
         }
 
         // 先按方法名分发给响应处理器
