@@ -25,6 +25,7 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/api': {
+        // 后端跑在本机开发环境（localhost:8080），DB/Redis/MinIO 等组件在 192.168.118.229
         target: 'http://localhost:8080',
         changeOrigin: true,
         ws: true,
