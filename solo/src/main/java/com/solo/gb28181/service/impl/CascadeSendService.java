@@ -372,14 +372,22 @@ public class CascadeSendService {
                 properties.getCascade().getSendRtpPortEnd());
     }
 
-    /** getMediaList 里 totalReaderCount / readerCount > 0 视为仍有观看者 */
+    /**
+     * getMediaList 里 totalReaderCount / readerCount > 0 视为仍有观看者。
+     * <p>ZLM 会把同一路流按 schema（ts / rtsp / fmp4 / rtmp…）各返回一条，readerCount 是各 schema 自己的读者数，
+     * totalReaderCount 才是全量。调用方拿这个结果决定要不要向真实设备回收取流，误判“没人看”会搞断正在进行的观看，
+     * 所以遍历全部匹配项取最大值，不能命中第一条就下结论。</p>
+     */
     private boolean streamHasReader(MediaServer server, String stream) {
+        int maxReaders = 0;
         for (JsonNode node : zlmRestClient.getMediaList(server)) {
-            if (APP.equals(node.path("app").asText()) && stream.equals(node.path("stream").asText())) {
-                return node.path("totalReaderCount").asInt(0) > 0 || node.path("readerCount").asInt(0) > 0;
+            if (!APP.equals(node.path("app").asText()) || !stream.equals(node.path("stream").asText())) {
+                continue;
             }
+            maxReaders = Math.max(maxReaders, Math.max(
+                    node.path("readerCount").asInt(0), node.path("totalReaderCount").asInt(0)));
         }
-        return false;
+        return maxReaders > 0;
     }
 
     private void sendError(SIPRequest request, int code, String reason) {

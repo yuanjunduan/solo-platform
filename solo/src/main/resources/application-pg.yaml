@@ -139,8 +139,9 @@ media:
     host-ip: ${project.media}
     # ZLM HTTP API 端口
     http-port: 8088
-    # ZLM API secret（与 hook-secret 一般相同，但也允许单节点独立配置）
-    secret: solo
+    # ZLM API secret，必须与 ZLM config.ini 的 [api].secret 完全一致。
+    # 不要用短串：ZLM 启动时会把过短的 secret（实测 4 位）判为非法并自动改写配置文件，导致对接不上
+    secret: soloZlmDefaultSecret2026ABCDEFGH
     # 对外播放使用的 IP（HTTP-FLV / WS-FLV / HLS / WebRTC）。留空则同 host-ip。
     # 勿与 host-ip 混用：SDP c= 也从此取，需对端可达
     stream-ip:

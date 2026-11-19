@@ -26,8 +26,19 @@ public class MediaServerLoader {
      */
     private static final double OFFLINE_SCORE = 1_000_000_000d;
 
+    /**
+     * 节点上线。
+     * <p>只在节点“不在索引里”或“处于离线占位分”时写 0；已在线节点的负载分必须保留——
+     * 本方法被 keepalive 与健康探测每 10s 各调一次，无条件 ZADD 会把活跃流数反复清零，
+     * 使 {@link #pickLeastLoadedServerId()} 退化成固定选字典序最小的节点。</p>
+     */
     public void onNodeOnline(String serverId) {
         if (serverId == null || serverId.isBlank()) {
+            return;
+        }
+        Double current = redis.opsForZSet().score(ONLINE_KEY, serverId);
+        if (current != null && current < OFFLINE_SCORE) {
+            // 已在线：保留负载分，不重复写、不刷日志
             return;
         }
         redis.opsForZSet().add(ONLINE_KEY, serverId, 0);

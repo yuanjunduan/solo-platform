@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration scan="false">
+
+    <!--
+      日志分流：
+        主日志    logs/solo.log        业务链路：SIP、级联目录、点播、接口请求
+        周期日志  logs/scheduled.log   定时任务与周期对账：健康探测、拉流代理对账、节点负载刷新…
+
+      分流只针对 INFO 及以下。WARN / ERROR 两侧都写，周期任务里的错误不会被藏起来。
+      两个文件格式完全一致（带 traceId），可按 traceId 跨文件关联同一次请求。
+
+      规则在 PERIODIC_RULES 里集中维护：
+        无 "|" 的条目  —— 该 logger 下所有 INFO/DEBUG 都只进周期日志；
+        带 "|" 的条目  —— 仅消息前缀匹配的那部分挪走，同类里的业务操作日志仍留在主日志。
+      调整日志文案时请同步这里的消息前缀，否则规则会失效。
+    -->
+    <!-- 日志目录，可用 -DLOG_DIR=/var/log/solo 覆盖（默认与 application.yaml 的 logging.file.name 所在目录一致） -->
+    <property name="LOG_DIR" value="${LOG_DIR:-logs}"/>
+    <property name="PATTERN"
+              value="%d{yyyy-MM-dd HH:mm:ss.SSS} %5p [%X{traceId:-}] [%15.15t] %-40.40logger{39} : %m%n"/>
+    <property name="PERIODIC_RULES"
+              value="com.solo.gb28181.task.;com.solo.media.task.;com.solo.onvif.task.;com.solo.media.service.MediaServerLoader;com.solo.media.service.impl.StreamProxyServiceImpl|[拉流代理对账];com.solo.media.service.impl.StreamPushServiceImpl|[推流] reconcile"/>
+
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <filter class="com.solo.common.logging.PeriodicLogFilter">
+            <rules>${PERIODIC_RULES}</rules>
+        </filter>
+        <encoder>
+            <pattern>${PATTERN}</pattern>
+            <charset>UTF-8</charset>
+        </encoder>
+    </appender>
+
+    <appender name="MAIN_FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${LOG_DIR}/solo.log</file>
+        <filter class="com.solo.common.logging.PeriodicLogFilter">
+            <rules>${PERIODIC_RULES}</rules>
+        </filter>
+        <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+            <fileNamePattern>${LOG_DIR}/solo.%d{yyyy-MM-dd}.%i.log</fileNamePattern>
+            <maxFileSize>20MB</maxFileSize>
+            <maxHistory>14</maxHistory>
+            <totalSizeCap>1GB</totalSizeCap>
+        </rollingPolicy>
+        <encoder>
+            <pattern>${PATTERN}</pattern>
+            <charset>UTF-8</charset>
+        </encoder>
+    </appender>
+
+    <appender name="SCHEDULED_FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${LOG_DIR}/scheduled.log</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+            <fileNamePattern>${LOG_DIR}/scheduled.%d{yyyy-MM-dd}.%i.log</fileNamePattern>
+            <maxFileSize>20MB</maxFileSize>
+            <maxHistory>7</maxHistory>
+            <totalSizeCap>300MB</totalSizeCap>
+        </rollingPolicy>
+        <encoder>
+            <pattern>${PATTERN}</pattern>
+            <charset>UTF-8</charset>
+        </encoder>
+    </appender>
+
+    <!-- 周期任务 / 对账：额外挂专属文件。additivity 保持 true，WARN 以上仍进主日志 -->
+    <logger name="com.solo.gb28181.task" level="INFO" additivity="true">
+        <appender-ref ref="SCHEDULED_FILE"/>
+    </logger>
+    <logger name="com.solo.media.task" level="INFO" additivity="true">
+        <appender-ref ref="SCHEDULED_FILE"/>
+    </logger>
+    <logger name="com.solo.onvif.task" level="INFO" additivity="true">
+        <appender-ref ref="SCHEDULED_FILE"/>
+    </logger>
+    <logger name="com.solo.media.service.MediaServerLoader" level="INFO" additivity="true">
+        <appender-ref ref="SCHEDULED_FILE"/>
+    </logger>
+    <logger name="com.solo.media.service.impl.StreamProxyServiceImpl" level="INFO" additivity="true">
+        <appender-ref ref="SCHEDULED_FILE"/>
+    </logger>
+    <logger name="com.solo.media.service.impl.StreamPushServiceImpl" level="INFO" additivity="true">
+        <appender-ref ref="SCHEDULED_FILE"/>
+    </logger>
+
+    <logger name="gov.nist" level="WARN"/>
+
+    <root level="INFO">
+        <appender-ref ref="CONSOLE"/>
+        <appender-ref ref="MAIN_FILE"/>
+    </root>
+
+</configuration>

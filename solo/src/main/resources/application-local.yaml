@@ -13,8 +13,9 @@ project:
   redis: 192.168.118.229
   # 对象存储（S3 兼容 / MinIO）地址，S3 API 宿主端口 19100
   s3: 192.168.118.229
-  # 流媒体 ZLMediaKit 地址（host network，与 solo 同机）
-  media: 192.168.118.229
+  # 流媒体 ZLMediaKit 地址（host network，与 solo 同机）：启动时 MediaServerBootstrap
+  # 会以这里为准覆写 media_server 的默认节点，所以必须填 ZLM 实际监听的那台机器的 IP
+  media: 192.168.118.7
 
 server:
   port: 8080
@@ -110,8 +111,8 @@ gb28181:
 #  原则同 gb28181：可能需要部署改的字段都保留。
 # ============================================================
 media:
-  # ZLM hook 回调的鉴权 secret（须与 ZLM config.ini 中 [api].secret 一致）；
-  # solo 收到 hook 后会校验请求中的 secret 字段。未配置时所有 hook 都会被拒，启动期日志会告警
+  # ZLM hook 回调的鉴权 secret：校验 hook URL 上的 ?secret= 查询参数（见 ZLM config.ini 各 on_* 事件地址），
+  # 与 [api].secret（REST 调用密钥）是两回事，二者不必相同。未配置时所有 hook 都会被拒，启动期日志会告警
   hook-secret: solo
 
   # 自动点播：流不存在时自动向设备发 INVITE 发起点播（需 RTP 多端口模式启用）。
@@ -143,8 +144,9 @@ media:
     host-ip: ${project.media}
     # ZLM HTTP API 端口
     http-port: 8088
-    # ZLM API secret（与 hook-secret 一般相同，但也允许单节点独立配置）
-    secret: solo
+    # 本机调试用值：必须与 ZLMediaKit 目录下 config-solo.ini / config-solo2.ini 的 [api].secret 一致
+    # （本启动会以这里为准覆写默认节点的 secret；仓库分发模板见 zlm/config.ini，那边用 soloZlmDefaultSecret2026ABCDEFGH）
+    secret: soloZlmLocalDebugSecret2026ABCDE
     # 对外播放使用的 IP（HTTP-FLV / WS-FLV / HLS / WebRTC）。留空则同 host-ip。
     # 勿与 host-ip 混用：SDP c= 也从此取，需对端可达
     stream-ip:

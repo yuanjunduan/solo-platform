@@ -252,8 +252,8 @@ cd solo && mvn spring-boot:run
 
 仓库提供一份开箱参考配置 [zlm/config.ini](zlm/config.ini)，复制到 ZLM 的配置目录（与 `MediaServer` 可执行文件同级的 `conf/`）后按需修改三处：
 
-- **Hook 回调地址**：以 `on_stream_changed` 为例，完整写法为 `http://solo.com:8080/api/hook/on_stream_changed?secret=solo`；请将 `solo.com` 改为后端实际可达地址（本地联调可在 hosts 中把 `solo.com` 指向后端 IP），其余 `on_*` 事件同理。**secret 必须作为 URL 查询参数（`?secret=`）带上**，且与本文件 `[api].secret`、后端 `media.hook-secret`（统一 `solo`）三者一致，否则后端 `checkSecret` 会拒绝回调。
-- **API 密钥**：`[api].secret` 须与后端媒体节点的 `secret` 一致（示例值 `solo`，生产环境请更换）。
+- **Hook 回调地址**：以 `on_stream_changed` 为例，完整写法为 `http://solo.com:8080/api/hook/on_stream_changed?secret=solo`；请将 `solo.com` 改为后端实际可达地址（本地联调可在 hosts 中把 `solo.com` 指向后端 IP），其余 `on_*` 事件同理。**secret 必须作为 URL 查询参数（`?secret=`）带上**，并与后端 `media.hook-secret`（示例 `solo`）一致，否则后端 `checkSecret` 会拒绝回调。注意这个 secret 与 `[api].secret` 是两回事，不必相同。
+- **API 密钥**：`[api].secret` 须与后端媒体节点的 `secret`（以及 `media.default-server.secret`）一致，示例值 `soloZlmDefaultSecret2026ABCDEFGH`，生产环境请更换。**不要用 `solo` 这类短串**：ZLM 启动时会把过短的 secret 判为非法，并自动改写整个配置文件。
 - **节点标识**：`[general].mediaServerId`（示例 `zlmediakit-local`）须与后端媒体节点的 `server-id` 完全一致。
 
 关键端口（需与后端媒体节点配置、防火墙放行对应）：
