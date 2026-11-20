@@ -16,6 +16,7 @@ public class PlayStartRequest {
     @Schema(description = "收流模式：UDP / TCP-passive")
     private String transport = "TCP-passive";
 
-    @Schema(description = "码流标识 token：留空/null = 主码流（子码流默认 streamnumber:1）")
-    private String streamNumber = "streamnumber:1";
+    // 不传/null = 主码流；要子码流由调用方显式传 streamnumber:1（前端大窗口监控即如此）
+    @Schema(description = "码流标识 token：留空/null = 主码流；非空 = 该 token 对应的子码流")
+    private String streamNumber;
 }
