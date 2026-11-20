@@ -10,6 +10,7 @@ import com.solo.gb28181.constant.GbSource;
 import com.solo.gb28181.entity.GbDevice;
 import com.solo.gb28181.entity.GbDeviceChannel;
 import com.solo.gb28181.entity.GbInviteSession;
+import com.solo.gb28181.event.device.DeviceOfflineEvent;
 import com.solo.gb28181.mapper.GbDeviceChannelMapper;
 import com.solo.gb28181.mapper.GbDeviceMapper;
 import com.solo.gb28181.request.GbDevicePageRequest;
@@ -23,6 +24,7 @@ import com.solo.gb28181.transmit.cmd.SipCommander;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
@@ -48,6 +50,7 @@ public class GbDeviceServiceImpl extends ServiceImpl<GbDeviceMapper, GbDevice> i
     private final GbInviteSessionService inviteSessionService;
     private final GbInviteSessionCleanupService inviteCleanup;
     private final GbDeviceChannelMapper channelMapper;
+    private final ApplicationEventPublisher eventPublisher;
 
 
     @Lazy
@@ -273,6 +276,9 @@ public class GbDeviceServiceImpl extends ServiceImpl<GbDeviceMapper, GbDevice> i
             baseMapper.updateById(device);
             redisTemplate.delete(GbRedisKeys.DEVICE_ONLINE_PREFIX + deviceId);
             cleanupSessions(deviceId);
+            // 通道置 OFF / 停目录订阅 / 级联 NOTIFY 统一交给 DeviceOfflineEventListener，
+            // 不在这里重复写一份，避免与 REGISTER 注销、心跳超时两条离线路径行为漂移
+            eventPublisher.publishEvent(new DeviceOfflineEvent(this, deviceId, "设备检测超时"));
             log.info("[设备检测] 离线 deviceId={}", deviceId);
         } catch (Exception e) {
             log.error("[设备检测] 标记离线失败 deviceId={}", deviceId, e);
