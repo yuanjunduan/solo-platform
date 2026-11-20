@@ -106,8 +106,13 @@ public class StreamProxyServiceImpl extends ServiceImpl<StreamProxyMapper, Strea
             p.setProxyKey(key);
             p.setStatus(1);
             p.setMediaServerId(server.getServerId());
-            p.setLastError(null);
             updateById(p);
+            // updateById 是 NOT_NULL 策略，实体里 setLastError(null) 不会进 SET 子句；
+            // 这里显式置空，否则状态已回到 1 但库里还留着上一轮的“源流已不可达”
+            lambdaUpdate()
+                    .set(StreamProxy::getLastError, null)
+                    .eq(StreamProxy::getId, id)
+                    .update();
             log.info("[拉流代理] enable ok id={} server={} key={}", id, server.getServerId(), key);
         } catch (Exception e) {
             String friendly = friendlyError(e.getMessage());
