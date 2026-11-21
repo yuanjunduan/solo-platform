@@ -8,9 +8,12 @@ import com.solo.common.PageResult;
 import com.solo.common.Result;
 import com.solo.common.ServiceException;
 import com.solo.gb28181.entity.GbDeviceChannel;
+import com.solo.gb28181.request.GbChannelSubtreePageRequest;
 import com.solo.gb28181.request.GbDeviceChannelBatchDeleteRequest;
 import com.solo.gb28181.request.GbDeviceChannelPageRequest;
 import com.solo.gb28181.response.GbChannelStatusCountVO;
+import com.solo.gb28181.response.GbChannelTreeNodeVO;
+import com.solo.gb28181.response.GbChannelTreeLevelVO;
 import com.solo.gb28181.response.GbDeviceChannelResponse;
 import com.solo.gb28181.service.GbDeviceChannelService;
 import io.swagger.v3.oas.annotations.Operation;
@@ -25,6 +28,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
@@ -64,6 +68,31 @@ public class GbDeviceChannelController {
                 .orderByAsc(GbDeviceChannel::getChannelId)
                 .list();
         return Result.success(list);
+    }
+
+    @Operation(summary = "按设备查询目录树（分组 + 通道）")
+    @Parameter(name = "deviceId", description = "设备国标 20 位 ID", in = ParameterIn.PATH)
+    @GetMapping("/tree/{deviceId}")
+    @RequirePermission({"gb28181:device-channel:list"})
+    public Result<List<GbChannelTreeNodeVO>> tree(@PathVariable String deviceId) {
+        return Result.success(channelService.treeByDevice(deviceId));
+    }
+
+    @Operation(summary = "目录树懒加载一层（含子树通道数）")
+    @GetMapping("/tree/children")
+    @RequirePermission({"gb28181:device-channel:list"})
+    public Result<GbChannelTreeLevelVO> treeChildren(
+            @Parameter(description = "设备国标 20 位 ID") @RequestParam String deviceId,
+            @Parameter(description = "组织国标码；不传=设备根") @RequestParam(required = false) String orgCode) {
+        return Result.success(channelService.treeChildren(deviceId, orgCode));
+    }
+
+    @Operation(summary = "选中组织下的通道分页（可包含子组织）")
+    @PostMapping("/subtree/page")
+    @RequirePermission({"gb28181:device-channel:list"})
+    public Result<PageResult<GbDeviceChannelResponse>> subtreePage(@RequestBody GbChannelSubtreePageRequest request) {
+        Page<GbDeviceChannelResponse> page = channelService.subtreePage(request);
+        return Result.success(new PageResult<>(page.getTotal(), page.getRecords()));
     }
 
     @Operation(summary = "新增通道")

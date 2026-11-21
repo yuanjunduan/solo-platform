@@ -6,6 +6,9 @@ import type {
   GbDeviceDetectResult,
   GbDeviceChannel,
   GbDeviceChannelPageRequest,
+  GbDeviceChannelTreeNode,
+  GbChannelTreeLevel,
+  GbChannelSubtreePageRequest,
   GbDeviceStatusCount,
   GbChannelStatusCount,
   GbPtzPreset,
@@ -143,6 +146,22 @@ export const getGbDeviceChannelPageApi = (data: GbDeviceChannelPageRequest) =>
 /** 通道状态统计（全局口径，按 parental 区分通道/分组） */
 export const getGbChannelStatusCountApi = () =>
   get<GbChannelStatusCount[]>('/api/gb28181/device-channel/status-count')
+
+/** 按设备查询目录树（分组为容器、通道为叶子，按 parentId 组装） */
+export const getGbDeviceChannelTreeApi = (deviceId: string) =>
+  get<GbDeviceChannelTreeNode[]>(
+    `/api/gb28181/device-channel/tree/${encodeURIComponent(deviceId)}`,
+  )
+
+/** 目录树懒加载一层（含子树通道数，一次只查一层） */
+export const getGbDeviceChannelTreeChildrenApi = (deviceId: string, orgCode?: string) =>
+  get<GbChannelTreeLevel>('/api/gb28181/device-channel/tree/children', {
+    params: { deviceId, orgCode: orgCode || undefined },
+  })
+
+/** 选中组织下的通道分页（includeSubtree 决定是否含子组织） */
+export const getGbChannelSubtreePageApi = (data: GbChannelSubtreePageRequest) =>
+  post<PageResult<GbDeviceChannel>>('/api/gb28181/device-channel/subtree/page', data)
 
 /** 手动新增通道（状态/来源由后端设定） */
 export const saveGbDeviceChannelApi = (data: Partial<GbDeviceChannel>) =>

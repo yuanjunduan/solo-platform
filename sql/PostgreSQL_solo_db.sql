@@ -632,7 +632,8 @@ CREATE TABLE gb_device_channel
     longitude     double precision DEFAULT NULL,
     latitude      double precision DEFAULT NULL,
     ptz_type      smallint DEFAULT 0,
-    parent_id     varchar(20) NOT NULL,
+    parent_id     varchar(64) NOT NULL,
+    tree_path     varchar(512) NOT NULL DEFAULT '',
     source        smallint NOT NULL DEFAULT 3,
     create_time   timestamp(0) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     update_time   timestamp(0) NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -665,12 +666,14 @@ COMMENT ON COLUMN gb_device_channel.longitude IS '经度';
 COMMENT ON COLUMN gb_device_channel.latitude IS '纬度';
 COMMENT ON COLUMN gb_device_channel.ptz_type IS '云台类型 0未知 1球机 2半球 3枪机 4遥控枪机';
 COMMENT ON COLUMN gb_device_channel.parent_id IS '父节点国标码';
+COMMENT ON COLUMN gb_device_channel.tree_path IS '组织路径：/设备码/父码/子码；分组与通道都写，用于子树前缀查询';
 COMMENT ON COLUMN gb_device_channel.source IS '数据来源 1新增 2导入 3注册';
 COMMENT ON COLUMN gb_device_channel.create_time IS '创建时间';
 COMMENT ON COLUMN gb_device_channel.update_time IS '更新时间';
 CREATE UNIQUE INDEX uk_device_channel ON gb_device_channel (device_id, channel_id);
 CREATE INDEX idx_channel_id ON gb_device_channel (channel_id);
 CREATE INDEX idx_gb_device_channel_parent_id ON gb_device_channel (parent_id);
+CREATE INDEX idx_device_tree_path ON gb_device_channel (device_id, parental, tree_path);
 CREATE INDEX idx_gb_device_channel_status ON gb_device_channel (status);
 CREATE INDEX idx_gb_device_channel_source ON gb_device_channel (source);
 

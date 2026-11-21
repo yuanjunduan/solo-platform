@@ -168,6 +168,45 @@ export interface GbDeviceChannel {
   updateTime?: string
 }
 
+/** 国标目录树节点：分组（parental=1）通过 children 挂下级分组/通道，通道为叶子 */
+export interface GbDeviceChannelTreeNode extends GbDeviceChannel {
+  children?: GbDeviceChannelTreeNode[]
+  /** 该节点（含所有子分组）下的通道总数；通道节点为 null */
+  subtreeChannelCount?: number | null
+  /** 是否还有直接下级（控制展开箭头）；通道节点为 false */
+  hasChildren?: boolean
+}
+
+/** 目录树懒加载一层（GET /api/gb28181/device-channel/tree/children） */
+export interface GbChannelTreeLevel {
+  /** 当前节点国标码；空串表示设备根 */
+  orgCode: string
+  /** 当前节点组织路径；设备根为 /设备码 */
+  treePath: string
+  /** 当前节点（含所有子分组）下的通道总数 */
+  subtreeChannelCount: number
+  /** 直接下级分组数 */
+  childGroupCount: number
+  /** 直接下级通道数 */
+  childChannelCount: number
+  /** 直接下级节点（已带各自子树通道数与可展开标记，不含更下层） */
+  children: GbDeviceChannelTreeNode[]
+}
+
+/** 选中组织下的通道分页请求（POST /api/gb28181/device-channel/subtree/page） */
+export interface GbChannelSubtreePageRequest extends PageRequest {
+  /** 所属设备国标编码 */
+  deviceId: string
+  /** 选中的组织国标码；不传=设备根 */
+  orgCode?: string
+  /** 是否包含子组织下的通道：true=整棵子树 */
+  includeSubtree?: boolean
+  /** 通道名称/国标码关键字 */
+  keyword?: string
+  /** ON 在线 / OFF 离线 / UNREGISTERED 未注册 */
+  status?: string
+}
+
 /** 国标设备状态统计行（GET /api/gb28181/device/status-count） */
 export interface GbDeviceStatusCount {
   /** 1 在线 / 0 离线 / 2 未注册 */

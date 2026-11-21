@@ -10,7 +10,7 @@
             cert_num, certifiable, secrecy,
             ip_address, port, password, status,
             longitude, latitude, ptz_type,
-            parent_id, source
+            parent_id, tree_path, source
         )
         VALUES
         <foreach collection="list" item="ch" separator=",">
@@ -22,7 +22,7 @@
                 #{ch.certNum}, #{ch.certifiable}, #{ch.secrecy},
                 #{ch.ipAddress}, #{ch.port}, #{ch.password}, #{ch.status},
                 #{ch.longitude}, #{ch.latitude}, #{ch.ptzType},
-                #{ch.parentId}, #{ch.source}
+                #{ch.parentId}, COALESCE(#{ch.treePath}, ''), #{ch.source}
             )
         </foreach>
         ON DUPLICATE KEY UPDATE
@@ -45,7 +45,8 @@
             status         = COALESCE(VALUES(status), status),
             longitude          = COALESCE(VALUES(longitude), longitude),
             latitude           = COALESCE(VALUES(latitude), latitude),
-            ptz_type       = COALESCE(VALUES(ptz_type), ptz_type)
+            ptz_type       = COALESCE(VALUES(ptz_type), ptz_type),
+            tree_path      = IF(VALUES(tree_path) &lt;&gt; '', VALUES(tree_path), tree_path)
     </insert>
 
     <insert id="batchUpsertRaw" parameterType="java.util.List" databaseId="postgresql">
@@ -56,7 +57,7 @@
             cert_num, certifiable, secrecy,
             ip_address, port, password, status,
             longitude, latitude, ptz_type,
-            parent_id, source
+            parent_id, tree_path, source
         )
         VALUES
         <foreach collection="list" item="ch" separator=",">
@@ -68,7 +69,7 @@
                 #{ch.certNum}, #{ch.certifiable}, #{ch.secrecy},
                 #{ch.ipAddress}, #{ch.port}, #{ch.password}, #{ch.status},
                 #{ch.longitude}, #{ch.latitude}, #{ch.ptzType},
-                #{ch.parentId}, #{ch.source}
+                #{ch.parentId}, COALESCE(#{ch.treePath}, ''), #{ch.source}
             )
         </foreach>
         ON CONFLICT (device_id, channel_id) DO UPDATE SET
@@ -92,7 +93,139 @@
             longitude      = COALESCE(EXCLUDED.longitude, gb_device_channel.longitude),
             latitude       = COALESCE(EXCLUDED.latitude, gb_device_channel.latitude),
             ptz_type       = COALESCE(EXCLUDED.ptz_type, gb_device_channel.ptz_type),
+            tree_path      = CASE WHEN EXCLUDED.tree_path &lt;&gt; '' THEN EXCLUDED.tree_path ELSE gb_device_channel.tree_path END,
             update_time    = CURRENT_TIMESTAMP
     </insert>
+
+    <!-- 组织路径重建：分四次 SQL 迭代，避免把十万级分组拉进内存算路径。
+         路径前缀是 /设备码，分组与通道都写：通道写自己的叶子路径，
+         这样子树通道数/子树分页就是一次 (device_id, parental, tree_path) 索引区间扫描。 -->
+    <update id="resetTreePath">
+        UPDATE gb_device_channel
+        SET tree_path = ''
+        WHERE device_id = #{deviceId}
+          AND tree_path &lt;&gt; ''
+    </update>
+
+    <update id="initRootTreePath">
+        UPDATE gb_device_channel
+        SET tree_path = CONCAT('/', #{deviceId}, '/', channel_id)
+        WHERE device_id = #{deviceId}
+          AND tree_path = ''
+          AND (parent_id IS NULL OR parent_id = '' OR parent_id = '0' OR parent_id = #{deviceId})
+    </update>
+
+    <update id="propagateTreePath" databaseId="mysql">
+        UPDATE gb_device_channel c
+        JOIN gb_device_channel p
+          ON p.device_id = c.device_id
+         AND p.parental = 1
+         AND p.channel_id = c.parent_id
+        SET c.tree_path = CONCAT(p.tree_path, '/', c.channel_id)
+        WHERE c.device_id = #{deviceId}
+          AND c.tree_path = ''
+          AND p.tree_path &lt;&gt; ''
+          <!-- 列宽 512：超深节点不写，留给 rescueOrphanTreePath 各自成根 -->
+          AND CHAR_LENGTH(p.tree_path) + CHAR_LENGTH(c.channel_id) + 1 &lt;= 512
+    </update>
+
+    <update id="propagateTreePath" databaseId="postgresql">
+        UPDATE gb_device_channel c
+        SET tree_path = concat(p.tree_path, '/', c.channel_id)
+        FROM gb_device_channel p
+        WHERE c.device_id = #{deviceId}
+          AND c.tree_path = ''
+          AND p.device_id = c.device_id
+          AND p.parental = 1
+          AND p.channel_id = c.parent_id
+          AND p.tree_path &lt;&gt; ''
+          AND length(p.tree_path) + length(c.channel_id) + 1 &lt;= 512
+    </update>
+
+    <!-- 父节点缺失（孤儿）、自指/成环、超深算不出完整路径的行：挂回设备根，不再丢节点 -->
+    <update id="rescueOrphanTreePath">
+        UPDATE gb_device_channel
+        SET tree_path = CONCAT('/', #{deviceId}, '/', channel_id)
+        WHERE device_id = #{deviceId}
+          AND tree_path = ''
+    </update>
+
+    <!-- 路径是否已建（旧数据升级后首次访问时补建） -->
+    <select id="countTreePath" resultType="int">
+        SELECT COUNT(*) FROM gb_device_channel
+        WHERE device_id = #{deviceId} AND tree_path &lt;&gt; ''
+    </select>
+
+    <!-- 懒加载一层：按父码取直接下级（分组 + 通道） -->
+    <select id="selectChildren" resultType="com.solo.gb28181.response.GbChannelTreeNodeVO">
+        SELECT id, device_id AS deviceId, channel_id AS channelId,
+               report_name AS reportName, name, parental, status, source,
+               ptz_type AS ptzType, parent_id AS parentId, tree_path AS treePath
+        FROM gb_device_channel
+        WHERE device_id = #{deviceId}
+          AND parent_id IN
+        <foreach collection="parentIds" item="pid" open="(" separator="," close=")">#{pid}</foreach>
+        ORDER BY parental DESC, channel_id ASC
+    </select>
+
+    <!-- 子层每个节点的子树通道数：一次扫描把本级所有子树的通道按首段归属汇总 -->
+    <select id="selectSubtreeChannelCount" databaseId="mysql" resultType="com.solo.gb28181.response.GbTreeCountVO">
+        SELECT SUBSTRING_INDEX(SUBSTRING(tree_path, CHAR_LENGTH(#{prefix}) + 2), '/', 1) AS code,
+               COUNT(*) AS cnt
+        FROM gb_device_channel
+        WHERE device_id = #{deviceId}
+          AND parental = 0
+          AND tree_path LIKE CONCAT(#{prefix}, '/%')
+        GROUP BY 1
+    </select>
+
+    <select id="selectSubtreeChannelCount" databaseId="postgresql" resultType="com.solo.gb28181.response.GbTreeCountVO">
+        SELECT split_part(substr(tree_path, length(#{prefix}) + 2), '/', 1) AS code,
+               COUNT(*) AS cnt
+        FROM gb_device_channel
+        WHERE device_id = #{deviceId}
+          AND parental = 0
+          AND tree_path LIKE concat(#{prefix}, '/%')
+        GROUP BY 1
+    </select>
+
+    <!-- 是否还有直接下级（决定前端是否显示展开箭头） -->
+    <select id="selectChildCountByParent" resultType="com.solo.gb28181.response.GbTreeCountVO">
+        SELECT parent_id AS code, COUNT(*) AS cnt
+        FROM gb_device_channel
+        WHERE device_id = #{deviceId}
+          AND parent_id IN
+        <foreach collection="parentIds" item="pid" open="(" separator="," close=")">#{pid}</foreach>
+        GROUP BY parent_id
+    </select>
+
+    <!-- 子树通道分页：includeSubtree=true 走 tree_path 前缀区间，false 只取直接挂载的通道 -->
+    <select id="selectSubtreePage" resultType="com.solo.gb28181.response.GbDeviceChannelResponse">
+        SELECT id, device_id AS deviceId, channel_id AS channelId,
+               report_name AS reportName, name, manufacturer, model, owner,
+               civil_code AS civilCode, block, address, safety_way AS safetyWay,
+               register_way AS registerWay, cert_num AS certNum, certifiable,
+               secrecy, ip_address AS ipAddress, port, status, longitude, latitude,
+               ptz_type AS ptzType, parent_id AS parentId, tree_path AS treePath, source
+        FROM gb_device_channel
+        WHERE device_id = #{deviceId}
+          AND parental = 0
+        <choose>
+            <when test="includeSubtree">
+                AND tree_path LIKE CONCAT(#{prefix}, '/%')
+            </when>
+            <otherwise>
+                AND parent_id = #{parentId}
+            </otherwise>
+        </choose>
+        <if test="keyword != null and keyword != ''">
+            AND (name LIKE CONCAT('%', #{keyword}, '%') OR channel_id LIKE CONCAT('%', #{keyword}, '%'))
+        </if>
+        <if test="status != null and status != ''">
+            AND status = #{status}
+        </if>
+        <!-- 按 tree_path 排序：与 (device_id, parental, tree_path) 索引顺序一致，不额外 filesort -->
+        ORDER BY tree_path
+    </select>
 
 </mapper>

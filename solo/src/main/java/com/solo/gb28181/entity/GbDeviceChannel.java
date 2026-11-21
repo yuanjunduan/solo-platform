@@ -101,6 +101,9 @@ public class GbDeviceChannel {
     @Schema(description = "父节点 ID")
     private String parentId;
 
+    @Schema(description = "组织路径：/设备码/父码/子码；分组与通道都写，根为 /设备码/自身码，用于子树前缀查询")
+    private String treePath;
+
     @Schema(description = "数据来源（1=系统新增/2=表格导入/3=设备注册，Catalog 同步自动入库）")
     private Integer source;
 

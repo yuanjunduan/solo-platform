@@ -1,8 +1,12 @@
 package com.solo.gb28181.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.solo.gb28181.entity.GbDeviceChannel;
 import com.solo.gb28181.response.GbChannelStatusCountVO;
+import com.solo.gb28181.response.GbChannelTreeNodeVO;
+import com.solo.gb28181.response.GbDeviceChannelResponse;
+import com.solo.gb28181.response.GbTreeCountVO;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
@@ -25,6 +29,42 @@ public interface GbDeviceChannelMapper extends BaseMapper<GbDeviceChannel> {
     }
 
     int batchUpsertRaw(@Param("list") List<GbDeviceChannel> channels);
+
+    /** 清空该设备的组织路径（重建第一步） */
+    int resetTreePath(@Param("deviceId") String deviceId);
+
+    /** 根分组（无父/挂设备节点）落 tree_path = /自身码 */
+    int initRootTreePath(@Param("deviceId") String deviceId);
+
+    /** 传播一轮：已算出路径的分组把路径带给直接下级；返回影响行数，0 表示收敛 */
+    int propagateTreePath(@Param("deviceId") String deviceId);
+
+    /** 兜底：父节点缺失（孤儿）或超深未算出路径的行挂回设备根；返回影响行数 */
+    int rescueOrphanTreePath(@Param("deviceId") String deviceId);
+
+    /** 已建路径的行数：为 0 说明是旧数据，首次访问树接口时补建 */
+    int countTreePath(@Param("deviceId") String deviceId);
+
+    /** 按父码取直接下级（分组 + 通道） */
+    List<GbChannelTreeNodeVO> selectChildren(@Param("deviceId") String deviceId,
+                                             @Param("parentIds") List<String> parentIds);
+
+    /** 下级各节点的子树通道数（按 tree_path 首段汇总，一次扫描） */
+    List<GbTreeCountVO> selectSubtreeChannelCount(@Param("deviceId") String deviceId,
+                                                  @Param("prefix") String prefix);
+
+    /** 指定国标码的直接下级数量（决定展开箭头） */
+    List<GbTreeCountVO> selectChildCountByParent(@Param("deviceId") String deviceId,
+                                                 @Param("parentIds") List<String> parentIds);
+
+    /** 子树通道分页：includeSubtree=true 走 tree_path 前缀，否则只取 parent_id 直接挂载 */
+    Page<GbDeviceChannelResponse> selectSubtreePage(Page<GbDeviceChannelResponse> page,
+                                                    @Param("deviceId") String deviceId,
+                                                    @Param("includeSubtree") boolean includeSubtree,
+                                                    @Param("prefix") String prefix,
+                                                    @Param("parentId") String parentId,
+                                                    @Param("keyword") String keyword,
+                                                    @Param("status") String status);
 
     @Select("SELECT parental, status, COUNT(*) AS count FROM gb_device_channel GROUP BY parental, status")
     List<GbChannelStatusCountVO> selectStatusCount();

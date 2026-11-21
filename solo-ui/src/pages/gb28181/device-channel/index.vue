@@ -97,7 +97,7 @@
       </div>
 
       <!-- 列表 -->
-      <div ref="scrollerRef" class="min-h-0 flex-1 overflow-auto">
+      <div v-show="activeKey !== 'tree'" ref="scrollerRef" class="min-h-0 flex-1 overflow-auto">
         <table class="w-full table-fixed border-collapse text-left text-[13px]">
           <thead class="sticky top-0 z-10">
             <tr class="bg-card text-xs text-muted-foreground">
@@ -291,6 +291,172 @@
         </div>
       </div>
 
+      <!-- 目录树：左侧组织树懒加载（每层一次请求），右侧选中组织的通道分页 -->
+      <div v-show="activeKey === 'tree'" class="min-h-0 flex-1 overflow-hidden">
+        <div
+          v-if="!deviceIdQ"
+          class="flex flex-col items-center gap-3 py-16 text-[13px] text-muted-foreground"
+        >
+          <div>目录树按设备展示，请先选择设备</div>
+          <GbDeviceSelect v-model="deviceIdQ" />
+        </div>
+        <div v-else class="flex h-full min-h-0">
+          <!-- 左：组织树 -->
+          <div class="flex w-[340px] shrink-0 flex-col border-r border-border">
+            <div
+              class="flex h-8 shrink-0 items-center gap-2 border-b border-border px-2 text-[11px] text-muted-foreground"
+            >
+              <span class="truncate">组织目录</span>
+              <span class="ml-auto shrink-0">{{ treeRootLevel?.subtreeChannelCount ?? 0 }} 路</span>
+            </div>
+            <div class="min-h-0 flex-1 overflow-auto py-1">
+              <div v-if="treeLoading" class="grid place-items-center py-16">
+                <IconLoader2 class="size-5 animate-spin text-muted-foreground" />
+              </div>
+              <div
+                v-else-if="!treeRootNodes.length"
+                class="flex flex-col items-center gap-2 py-16 text-[13px] text-muted-foreground"
+              >
+                <IconVideoOff class="size-8" />
+                <div>该设备下暂无目录数据，请先同步通道目录</div>
+              </div>
+              <template v-else>
+                <div
+                  class="flex h-7 cursor-pointer items-center gap-1 rounded pr-2 pl-1.5 text-xs"
+                  :class="
+                    treeSelectedCode === ''
+                      ? 'bg-primary/10 text-foreground'
+                      : 'hover:bg-muted/50'
+                  "
+                  @click="selectOrg('')"
+                >
+                  <Folder class="size-3.5 shrink-0 text-amber-400/80" />
+                  <span class="truncate">设备（全部组织）</span>
+                  <span class="ml-auto shrink-0 text-[10px] text-muted-foreground/70">
+                    {{ treeRootLevel?.subtreeChannelCount ?? 0 }} 路
+                  </span>
+                </div>
+                <GbDeviceChannelTree
+                  :nodes="treeRootNodes"
+                  :selected-code="treeSelectedCode"
+                  :expanded="treeExpanded"
+                  :loading="treeNodeLoading"
+                  @select="onTreeSelect"
+                  @toggle="onToggleTree"
+                />
+              </template>
+            </div>
+          </div>
+
+          <!-- 右：选中组织的通道 -->
+          <div class="flex min-w-0 flex-1 flex-col">
+            <div
+              class="flex h-8 shrink-0 items-center gap-3 border-b border-border px-3 text-[11px] text-muted-foreground"
+            >
+              <span class="max-w-[200px] truncate" :title="treeSelectedLabel">
+                {{ treeSelectedLabel }}
+              </span>
+              <label class="flex shrink-0 cursor-pointer items-center gap-1.5">
+                <Switch
+                  :model-value="includeSubtree"
+                  @update:model-value="onToggleIncludeSubtree"
+                />
+                包含子组织
+              </label>
+              <input
+                v-model="treeKeyword"
+                class="h-6 w-44 rounded border border-border bg-transparent px-2 text-[11px] outline-none focus:border-primary"
+                placeholder="名称 / 国标码"
+              />
+              <span class="ml-auto shrink-0">共 {{ treeChannelTotal }} 路</span>
+            </div>
+            <div class="min-h-0 flex-1 overflow-auto">
+              <table class="w-full table-fixed border-collapse text-left text-[13px]">
+                <thead class="sticky top-0 z-10">
+                  <tr class="bg-card text-xs text-muted-foreground">
+                    <th class="px-3 py-2 font-normal">通道名称</th>
+                    <th class="w-52 px-3 py-2 font-normal">通道编码</th>
+                    <th class="w-[64px] px-3 py-2 font-normal">状态</th>
+                    <th class="w-24 px-3 py-2 font-normal">类型</th>
+                    <th class="w-24 px-3 py-2 font-normal">数据来源</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr
+                    v-for="c in treeChannels"
+                    :key="c.id"
+                    class="cursor-pointer"
+                    :class="
+                      !creating && selected?.id === c.id ? 'bg-primary/[0.07]' : 'hover:bg-muted/30'
+                    "
+                    @click="onTreeChannelClick(c)"
+                  >
+                    <td class="truncate px-3 py-2" :title="displayName(c)">
+                      {{ displayName(c) }}
+                    </td>
+                    <td class="truncate px-3 py-2 font-mono" :title="c.channelId">
+                      {{ c.channelId }}
+                    </td>
+                    <td class="px-3 py-2">
+                      <span
+                        class="text-xs"
+                        :class="
+                          c.status === 'ON'
+                            ? 'text-emerald-500'
+                            : c.status === 'OFF'
+                              ? 'text-red-500'
+                              : 'text-muted-foreground'
+                        "
+                      >
+                        {{ statusText(c) }}
+                      </span>
+                    </td>
+                    <td class="px-3 py-2 text-xs text-muted-foreground">{{ ptzText(c) }}</td>
+                    <td class="px-3 py-2 text-xs text-muted-foreground">
+                      {{ sourceText(c.source) }}
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+              <div v-if="treeChannelLoading" class="grid place-items-center py-16">
+                <IconLoader2 class="size-5 animate-spin text-muted-foreground" />
+              </div>
+              <div
+                v-else-if="!treeChannels.length"
+                class="flex flex-col items-center gap-2 py-16 text-[13px] text-muted-foreground"
+              >
+                <IconVideoOff class="size-8" />
+                <div>{{ includeSubtree ? '该组织及其子组织下暂无通道' : '该组织下暂无直属通道' }}</div>
+              </div>
+            </div>
+            <div
+              class="flex h-8 shrink-0 items-center gap-2 border-t border-border px-3 text-[11px] text-muted-foreground"
+            >
+              <span>第 {{ treeChannelPage }} / {{ treeChannelPages }} 页</span>
+              <div class="flex-1" />
+              <Button
+                variant="ghost"
+                size="sm"
+                class="h-6 text-xs"
+                :disabled="treeChannelPage <= 1"
+                @click="gotoTreePage(treeChannelPage - 1)"
+              >
+                上一页
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                class="h-6 text-xs"
+                :disabled="treeChannelPage >= treeChannelPages"
+                @click="gotoTreePage(treeChannelPage + 1)"
+              >
+                下一页
+              </Button>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- 快捷键条 -->
       <div
         class="flex h-8 shrink-0 items-center gap-3 border-t border-border px-3 text-[11px] text-muted-foreground/70"
@@ -301,7 +467,11 @@
         <span><kbd>N</kbd> 新建</span>
         <span><kbd>R</kbd> 刷新</span>
         <div class="flex-1" />
-        <span>共 {{ resource.total.value }} 条通道</span>
+        <span v-if="activeKey === 'tree'">
+          选中 {{ treeSelectedLabel }}：{{ treeChannelTotal }} 路通道（含子组织
+          {{ includeSubtree ? '是' : '否' }}）
+        </span>
+        <span v-else>共 {{ resource.total.value }} 条通道</span>
       </div>
     </div>
 
@@ -329,12 +499,15 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { IconSearch, IconX, IconFilter, IconLoader2, IconVideoOff } from '@tabler/icons-vue'
-import { Plus, Trash2, Loader2 } from 'lucide-vue-next'
+import { Plus, Trash2, Loader2, Folder } from 'lucide-vue-next'
 import GbChannelInspector from '@/features/gb/GbChannelInspector.vue'
+import GbDeviceChannelTree from '@/features/gb/GbDeviceChannelTree.vue'
 import GbDeviceSelect from '@/features/gb/GbDeviceSelect.vue'
 import RefreshButton from '@/components/RefreshButton.vue'
 import {
   getGbDeviceChannelPageApi,
+  getGbDeviceChannelTreeChildrenApi,
+  getGbChannelSubtreePageApi,
   batchDeleteGbDeviceChannelApi,
   getGbChannelStatusCountApi,
 } from '@/api/gb28181'
@@ -344,12 +517,18 @@ import { confirm } from '@/lib/confirm'
 import { toast } from '@/lib/toast'
 import Button from '@/components/ui/button/Button.vue'
 import Checkbox from '@/components/ui/checkbox/Checkbox.vue'
+import Switch from '@/components/ui/switch/Switch.vue'
 import { Select, SelectContent, SelectItem } from '@/components/ui/select'
 import { SelectTrigger as RawSelectTrigger } from 'reka-ui'
-import type { GbDeviceChannel, GbDeviceChannelPageRequest } from '@/types/api'
+import type {
+  GbDeviceChannel,
+  GbDeviceChannelPageRequest,
+  GbDeviceChannelTreeNode,
+  GbChannelTreeLevel,
+} from '@/types/api'
 
 /* ---------------- 搜索 / 状态 tab ---------------- */
-type TabKey = 'all' | 'group' | 'channel' | 'online' | 'offline' | 'unregistered'
+type TabKey = 'all' | 'group' | 'tree' | 'channel' | 'online' | 'offline' | 'unregistered'
 
 const channelIdQ = ref('')
 const nameQ = ref('')
@@ -377,6 +556,7 @@ watch(activeKey, (key) => {
 const counts = ref<Record<TabKey, number>>({
   all: 0,
   group: 0,
+  tree: 0,
   channel: 0,
   online: 0,
   offline: 0,
@@ -386,6 +566,7 @@ const counts = ref<Record<TabKey, number>>({
 const tabs = computed(() => [
   { key: 'all' as const, label: '全部' },
   { key: 'group' as const, label: '分组' },
+  { key: 'tree' as const, label: '目录树' },
   { key: 'channel' as const, label: '通道' },
   { key: 'online' as const, label: '在线' },
   { key: 'offline' as const, label: '离线' },
@@ -437,6 +618,7 @@ const fetchStatusCount = async () => {
   counts.value = {
     all: group + online + offline + unregistered,
     group,
+    tree: group + online + offline + unregistered,
     channel: online + offline + unregistered,
     online,
     offline,
@@ -444,9 +626,166 @@ const fetchStatusCount = async () => {
   }
 }
 
+/* ---------------- 目录树：左侧组织树懒加载，右侧选中组织通道分页 ---------------- */
+/** 设备根一层的统计（子树通道总数 / 下级分组数 / 下级通道数） */
+const treeRootLevel = ref<GbChannelTreeLevel | null>(null)
+const treeRootNodes = ref<GbDeviceChannelTreeNode[]>([])
+const treeLoading = ref(false)
+/** 已展开节点（按国标码，节点可能在多层） */
+const treeExpanded = ref<Set<string>>(new Set())
+const treeNodeLoading = ref<Set<string>>(new Set())
+/** 当前选中组织：'' = 设备根 */
+const treeSelectedCode = ref('')
+const treeSelectedNode = ref<GbDeviceChannelTreeNode | null>(null)
+const treeSelectedLabel = computed(() =>
+  treeSelectedNode.value ? displayName(treeSelectedNode.value) : '设备（全部组织）',
+)
+
+/** 右侧通道列表（子树分页，默认 200/页） */
+const treeChannels = ref<GbDeviceChannel[]>([])
+const treeChannelTotal = ref(0)
+const treeChannelPage = ref(1)
+const TREE_PAGE_SIZE = 200
+const treeChannelLoading = ref(false)
+const includeSubtree = ref(true)
+const treeKeyword = ref('')
+const treeChannelPages = computed(() =>
+  Math.max(1, Math.ceil(treeChannelTotal.value / TREE_PAGE_SIZE)),
+)
+
+const findTreeNode = (
+  list: GbDeviceChannelTreeNode[],
+  code: string,
+): GbDeviceChannelTreeNode | null => {
+  for (const node of list) {
+    if (node.channelId === code) return node
+    const hit = node.children?.length ? findTreeNode(node.children, code) : null
+    if (hit) return hit
+  }
+  return null
+}
+
+/** 拉设备根一层：顺带把右侧列表重置到「设备（全部组织）」 */
+const loadRootTree = async () => {
+  if (!deviceIdQ.value) {
+    treeRootLevel.value = null
+    treeRootNodes.value = []
+    treeExpanded.value = new Set()
+    treeChannels.value = []
+    treeChannelTotal.value = 0
+    treeSelectedCode.value = ''
+    treeSelectedNode.value = null
+    return
+  }
+  treeLoading.value = true
+  try {
+    treeRootLevel.value = (await getGbDeviceChannelTreeChildrenApi(deviceIdQ.value)).data ?? null
+    treeRootNodes.value = treeRootLevel.value?.children ?? []
+    treeExpanded.value = new Set()
+    treeNodeLoading.value = new Set()
+    await selectOrg('')
+  } finally {
+    treeLoading.value = false
+  }
+}
+
+/** 展开/收起：首次展开才发起下级请求（懒加载） */
+const onToggleTree = async (code: string) => {
+  const next = new Set(treeExpanded.value)
+  if (next.has(code)) {
+    next.delete(code)
+    treeExpanded.value = next
+    return
+  }
+  const node = findTreeNode(treeRootNodes.value, code)
+  if (!node) return
+  next.add(code)
+  treeExpanded.value = next
+  if (node.children?.length) return
+
+  treeNodeLoading.value = new Set(treeNodeLoading.value).add(code)
+  try {
+    const level = (await getGbDeviceChannelTreeChildrenApi(deviceIdQ.value!, code)).data
+    node.children = level?.children ?? []
+    node.hasChildren = !!level?.children?.length
+    node.subtreeChannelCount = level?.subtreeChannelCount ?? node.subtreeChannelCount
+  } finally {
+    const pending = new Set(treeNodeLoading.value)
+    pending.delete(code)
+    treeNodeLoading.value = pending
+  }
+}
+
+/** 点树节点：分组=看该组织及其子组织的通道；通道=直接打开检视器 */
+const onTreeSelect = (node: GbDeviceChannelTreeNode) => {
+  if (node.parental === 1) {
+    selectOrg(node.channelId, node)
+    return
+  }
+  creating.value = false
+  selected.value = node
+}
+
+const selectOrg = async (code: string, node?: GbDeviceChannelTreeNode) => {
+  treeSelectedCode.value = code
+  treeSelectedNode.value = node ?? (code ? findTreeNode(treeRootNodes.value, code) : null)
+  treeChannelPage.value = 1
+  await loadTreeChannels()
+}
+
+const loadTreeChannels = async () => {
+  if (!deviceIdQ.value) {
+    treeChannels.value = []
+    treeChannelTotal.value = 0
+    return
+  }
+  treeChannelLoading.value = true
+  try {
+    const res = await getGbChannelSubtreePageApi({
+      page: treeChannelPage.value,
+      pageSize: TREE_PAGE_SIZE,
+      deviceId: deviceIdQ.value,
+      orgCode: treeSelectedCode.value || undefined,
+      includeSubtree: includeSubtree.value,
+      keyword: treeKeyword.value.trim() || undefined,
+    })
+    treeChannels.value = res.data?.rows ?? []
+    treeChannelTotal.value = Number(res.data?.total ?? 0)
+  } finally {
+    treeChannelLoading.value = false
+  }
+}
+
+const onToggleIncludeSubtree = (v: boolean) => {
+  includeSubtree.value = v
+  treeChannelPage.value = 1
+  loadTreeChannels()
+}
+
+const gotoTreePage = (p: number) => {
+  treeChannelPage.value = Math.min(Math.max(1, p), treeChannelPages.value)
+  loadTreeChannels()
+}
+
+const onTreeChannelClick = (c: GbDeviceChannel) => {
+  creating.value = false
+  selected.value = c
+}
+
+let treeKeywordTimer: ReturnType<typeof setTimeout> | null = null
+watch(treeKeyword, () => {
+  if (treeKeywordTimer) clearTimeout(treeKeywordTimer)
+  treeKeywordTimer = setTimeout(() => {
+    treeChannelPage.value = 1
+    loadTreeChannels()
+  }, 300)
+})
+
 /** 手动刷新：重拉列表（保留当前筛选）+ 状态统计 */
 const onRefresh = () =>
-  Promise.all([resource.load(true), fetchStatusCount()])
+  activeKey.value === 'tree'
+    ? Promise.all([loadRootTree(), fetchStatusCount()])
+    : Promise.all([resource.load(true), fetchStatusCount()])
 
 let debounceTimer: ReturnType<typeof setTimeout> | null = null
 const triggerSearch = () => {
@@ -461,6 +800,11 @@ watch([channelIdQ, nameQ], triggerSearch)
 watch(deviceIdQ, () => {
   cursor.value = 0
   clearChecked()
+  selected.value = null
+  if (activeKey.value === 'tree') {
+    loadRootTree()
+    return
+  }
   resource.search()
 })
 watch(sourceFilter, () => {
@@ -479,6 +823,11 @@ const onTab = (key: TabKey) => {
   activeKey.value = key
   cursor.value = 0
   clearChecked()
+  // 目录树走独立接口（tree/children + subtree/page），不参与分页查询
+  if (key === 'tree') {
+    loadRootTree()
+    return
+  }
   resource.search()
 }
 
@@ -647,6 +996,16 @@ const onGlobalKeydown = (e: KeyboardEvent) => {
     return
   }
   const list = resource.items.value
+  // 目录树模式只保留刷新/关闭，避免 Enter 命中上一页缓存行
+  if (activeKey.value === 'tree') {
+    if (e.key === 'r' || e.key === 'R') {
+      e.preventDefault()
+      onRefresh()
+    } else if (e.key === 'Escape') {
+      onCloseInspector()
+    }
+    return
+  }
   switch (e.key) {
     case '/':
       e.preventDefault()
@@ -694,6 +1053,7 @@ onMounted(async () => {
   await Promise.all([resource.load(true), fetchStatusCount()])
   observer = new IntersectionObserver(
     (entries) => {
+      if (activeKey.value === 'tree') return
       if (entries[0].isIntersecting) resource.load(false)
     },
     { root: scrollerRef.value, rootMargin: '80px' },

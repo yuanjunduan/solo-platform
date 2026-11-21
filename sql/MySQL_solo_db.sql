@@ -494,7 +494,8 @@ CREATE TABLE gb_device_channel
     longitude    double               DEFAULT NULL COMMENT '经度',
     latitude     double               DEFAULT NULL COMMENT '纬度',
     ptz_type     tinyint              DEFAULT 0 COMMENT '云台类型 0未知 1球机 2半球 3枪机 4遥控枪机',
-    parent_id    varchar(20) NOT NULL COMMENT '父节点国标码',
+    parent_id    varchar(64) NOT NULL COMMENT '父节点国标码',
+    tree_path    varchar(512) NOT NULL DEFAULT '' COMMENT '组织路径：/设备码/父码/子码；分组与通道都写，用于子树前缀查询',
     source       tinyint     NOT NULL DEFAULT 3 COMMENT '数据来源 1新增 2导入 3注册',
     create_time  datetime    NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     update_time  datetime    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
@@ -502,6 +503,7 @@ CREATE TABLE gb_device_channel
     UNIQUE KEY uk_device_channel (device_id, channel_id),
     KEY          idx_channel_id (channel_id),
     KEY          idx_parent_id (parent_id),
+    KEY          idx_device_tree_path (device_id, parental, tree_path),
     KEY          idx_status (status),
     KEY          idx_source (source)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

@@ -9,6 +9,7 @@ import com.solo.gb28181.entity.GbDevice;
 import com.solo.gb28181.entity.GbDeviceChannel;
 import com.solo.gb28181.mapper.GbDeviceChannelMapper;
 import com.solo.gb28181.mapper.GbDeviceMapper;
+import com.solo.gb28181.service.GbDeviceChannelService;
 import com.solo.gb28181.service.GbDeviceService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -57,6 +58,7 @@ public class CatalogSyncSupport {
     private final Gb28181Properties properties;
     private final GbDeviceService deviceService;
     private final GbDeviceChannelMapper channelMapper;
+    private final GbDeviceChannelService channelService;
     private final GbDeviceMapper deviceMapper;
     private final ThreadPoolTaskExecutor executor;
 
@@ -67,11 +69,13 @@ public class CatalogSyncSupport {
     public CatalogSyncSupport(Gb28181Properties properties,
                               GbDeviceService deviceService,
                               GbDeviceChannelMapper channelMapper,
+                              GbDeviceChannelService channelService,
                               GbDeviceMapper deviceMapper,
                               @Qualifier("catalogSyncExecutor") ThreadPoolTaskExecutor executor) {
         this.properties = properties;
         this.deviceService = deviceService;
         this.channelMapper = channelMapper;
+        this.channelService = channelService;
         this.deviceMapper = deviceMapper;
         this.executor = executor;
     }
@@ -142,9 +146,12 @@ public class CatalogSyncSupport {
                 for (GbDeviceChannel it : items) {
                     if (it.getChannelId() != null) knownCodes.add(it.getChannelId());
                 }
-                // 库里已存在的 channel_id 也算"父可达"（本次没重报但历史已入库）
+                // 库里已存在的 channel_id 也算"父可达"（本次没重报但历史已入库）。
+                // 只看本设备：通道量百万级时不能扫全表，且目录树本来就是按设备收口。
                 channelMapper.selectList(
-                                new LambdaQueryWrapper<GbDeviceChannel>().select(GbDeviceChannel::getChannelId))
+                                new LambdaQueryWrapper<GbDeviceChannel>()
+                                        .select(GbDeviceChannel::getChannelId)
+                                        .eq(GbDeviceChannel::getDeviceId, device.getDeviceId()))
                         .forEach(e -> { if (e.getChannelId() != null) knownCodes.add(e.getChannelId()); });
 
                 int reparented = 0;
@@ -186,6 +193,8 @@ public class CatalogSyncSupport {
                 log.warn("[通道目录] final flush 保留残缺数据 deviceId={} ratio={} < threshold={} 保留 {} 条已入库通道，等下次 sync 补齐",
                         ctx.deviceId, String.format("%.4f", ratio), threshold, countAfter);
             }
+            // 组织路径重建：必须在清扫之后——tree_path 是子树查询（前缀匹配）的依据
+            channelService.rebuildTreePath(device.getDeviceId());
             // 落库后回写 lastCatalogSyncTime（只更这一个字段，避免覆盖并发写入的其他字段）
             deviceMapper.update(null,
                     new LambdaUpdateWrapper<GbDevice>()
