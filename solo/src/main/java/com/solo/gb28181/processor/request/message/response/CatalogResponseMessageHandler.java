@@ -1,6 +1,7 @@
 package com.solo.gb28181.processor.request.message.response;
 
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
+import com.solo.gb28181.config.Gb28181Properties;
 import com.solo.gb28181.entity.GbDevice;
 import com.solo.gb28181.entity.GbDeviceChannel;
 import com.solo.gb28181.event.catalog.CatalogSyncProgressEvent;
@@ -36,6 +37,8 @@ public class CatalogResponseMessageHandler implements MessageHandler {
     private final GbDeviceChannelService channelService;
     private final GbDeviceService deviceService;
     private final ApplicationEventPublisher eventPublisher;
+    /** 本平台国标编码（接收侧身份），日志里与本下级平台的 deviceId 对照打印 */
+    private final Gb28181Properties gb28181Properties;
 
     @Lazy
     @Autowired
@@ -55,6 +58,14 @@ public class CatalogResponseMessageHandler implements MessageHandler {
     public void handleForDevice(RequestEvent event, GbDevice device, Element root) {
         int sn = parseInt(XmlUtils.childText(root, "SN"), -1);
         int sumNum = parseInt(XmlUtils.childText(root, "SumNum"), 0);
+
+        // 诊断：打印响应报文原文（截断），用于确认对端到底推的是目录节点还是通道节点
+        if (log.isInfoEnabled() && event.getRequest().getRawContent() != null) {
+            String raw = decodeRaw(event.getRequest().getRawContent());
+            log.info("[通道目录] 收到响应 localId={} deviceId={} sn={} sumNum={} 报文长度={} 内容={}",
+                    gb28181Properties.getId(), device.getDeviceId(), sn, sumNum, raw.length(),
+                    raw.length() > 1500 ? raw.substring(0, 1500) + "..." : raw);
+        }
         if (sn < 0) {
             log.warn("[通道目录] 缺失 SN，丢弃 deviceId={}", device.getDeviceId());
             return;
@@ -127,9 +138,18 @@ public class CatalogResponseMessageHandler implements MessageHandler {
             }
 
             // ParentID：空串 → 设备自身 DeviceID（让"顶层 215/216"挂在设备节点下，而非根）
-            String parentId = XmlUtils.childText(item, "ParentID");
-            String effectiveParentId = (parentId == null || parentId.isBlank())
-                    ? device.getDeviceId() : parentId;
+            // 部分级联平台（海康）会填 "平台编码/父节点编码" 的路径式值，直接入库会超出
+            // parent_id 列宽并让整批 upsert 失败，这里先归一化再决定落库值
+            String rawParentId = XmlUtils.childText(item, "ParentID");
+            String parentId = normalizeParentId(rawParentId);
+            String effectiveParentId = parentId == null ? device.getDeviceId() : parentId;
+
+            // 诊断：打印每个 Item 的判定结果，确认设备/通道分流是否符合预期
+            if (log.isInfoEnabled()) {
+                log.info("[通道目录] item localId={} deviceId={} id={} name={} parentId={} rawParentId={} parental={} typeCode={} isDirectory={}",
+                        gb28181Properties.getId(), device.getDeviceId(), itemId, XmlUtils.childText(item, "Name"),
+                        effectiveParentId, rawParentId, parental, typeCode, isDirectoryType);
+            }
 
             GbDeviceChannel itemEntity = parseItem(item, device, effectiveParentId, isDirectoryType);
             if (itemEntity != null) {
@@ -174,8 +194,10 @@ public class CatalogResponseMessageHandler implements MessageHandler {
         ch.setName(emptyToNull(XmlUtils.childText(item, "Name")));
         ch.setParentId(parentId);
         ch.setParental(isDirectory ? 1 : 0);
-        // 分组与通道都必填 deviceId：分组标识推送源设备
+        // 分组与通道都必填 deviceId：分组标识推送源设备；platformId 固定记接入平台（发起本次目录的注册方），
+        // 将来若把 deviceId 细化为下属子设备码，仍能靠 platformId 区分是哪个下级平台推来的
         ch.setDeviceId(device.getDeviceId());
+        ch.setPlatformId(device.getDeviceId());
 
         if (!isDirectory) {
             // 通道：完整业务字段
@@ -211,6 +233,44 @@ public class CatalogResponseMessageHandler implements MessageHandler {
     }
 
     // ---------------- 辅助 ----------------
+
+    /**
+     * 归一化 ParentID：兼容 {@code "平台编码/父节点编码"} 的路径式写法（取最后一段非空段）。
+     * <p>海康等平台在部分分组下会把 ParentID 填成 41 位路径串，直接落 varchar(20) 的
+     * parent_id 会让整批 upsert 抛 Data too long、整片数据全部丢失。归一化后仍超长的
+     * 视为非法值返回 null，由调用方回落到设备自身节点。</p>
+     */
+    private static String normalizeParentId(String parentId) {
+        if (parentId == null || parentId.isBlank()) {
+            return null;
+        }
+        String normalized = parentId.trim();
+        int slash = normalized.lastIndexOf('/');
+        if (slash >= 0) {
+            normalized = normalized.substring(slash + 1).trim();
+        }
+        if (normalized.isEmpty() || normalized.length() > MAX_PARENT_ID_LENGTH) {
+            return null;
+        }
+        return normalized;
+    }
+
+    /** parent_id 列宽上限（varchar(64)），超长视为非法值 */
+    private static final int MAX_PARENT_ID_LENGTH = 64;
+
+    /** 按报文 XML 声明里的 encoding 解码原始字节；探测失败时回落 GB18030（GB2312 超集）。 */
+    private static String decodeRaw(byte[] raw) {
+        String head = new String(raw, 0, Math.min(raw.length, 200), java.nio.charset.StandardCharsets.ISO_8859_1);
+        java.util.regex.Matcher m = java.util.regex.Pattern
+                .compile("encoding\\s*=\\s*\"([^\"]+)\"", java.util.regex.Pattern.CASE_INSENSITIVE)
+                .matcher(head);
+        String charsetName = m.find() ? m.group(1) : "GB18030";
+        try {
+            return new String(raw, charsetName);
+        } catch (Exception e) {
+            return new String(raw, java.nio.charset.Charset.forName("GB18030"));
+        }
+    }
 
     /**
      * 解析 {@code Parental} 字段，对异常值做兜底。

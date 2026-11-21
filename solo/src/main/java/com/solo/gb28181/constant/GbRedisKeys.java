@@ -13,6 +13,22 @@ public interface GbRedisKeys {
     // REGISTER Digest 挑战 nonce，值为设备 ID 与 realm 的绑定关系，TTL 5 分钟
     String REGISTER_NONCE_PREFIX = "gb28181:auth:register:nonce:";
 
+    // 当前有效 nonce 指针：gb28181:auth:register:nonce:cur:<deviceId>:<realm> → nonce
+    // 同 deviceId+realm 在 5 分钟内复用同一个 nonce，避免鉴权失败风暴时每秒新建一个 Redis 键
+    String REGISTER_NONCE_CURRENT_PREFIX = "gb28181:auth:register:nonce:cur:";
+
+    // 401 挑战限流标记：同 deviceId 在窗口期内只回一次 401，其余静默丢弃
+    String REGISTER_CHALLENGE_LIMIT_PREFIX = "gb28181:auth:register:challenge:";
+
+    // 鉴权失败计数（连续失败达到阈值后进入封禁）
+    String REGISTER_AUTH_FAIL_PREFIX = "gb28181:auth:register:fail:";
+
+    // 鉴权失败封禁标记：存在即静默丢弃，靠 TTL 自动解封
+    String REGISTER_AUTH_BAN_PREFIX = "gb28181:auth:register:ban:";
+
+    // 鉴权失败日志聚合窗口：窗口内只打一条失败日志
+    String REGISTER_AUTH_LOG_PREFIX = "gb28181:auth:register:log:";
+
     // ===== 设备在线状态 =====
 
     // 设备在线 key 前缀，值就是 "1"，靠 TTL 维持

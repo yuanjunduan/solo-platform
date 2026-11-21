@@ -85,27 +85,48 @@ public class RegisterRequestProcessor extends SipRequestProcessorBase implements
             log.warn("[设备注册] 命中禁用名单，静默丢弃 REGISTER: deviceId={}", deviceId);
             return;
         }
+        // 鉴权失败封禁：连续失败达到阈值后静默丢弃 1 分钟，防止 401 风暴占满 SIP 线程池。
+        // 设备鉴权成功后失败计数会被清零，不会误伤正常注册。
+        if (digestAuthHelper.isAuthBanned(deviceId)) {
+            log.debug("[设备注册] deviceId={} 处于鉴权失败封禁期，静默丢弃", deviceId);
+            return;
+        }
         String password = properties.getPassword();
         String title = isUnregister ? "[设备注销]" : "[设备注册]";
         log.info("{} deviceId={} from={}", title, deviceId, requestAddress);
 
-        // 非空密码启用严格 Digest 鉴权。首次请求、错误摘要、伪造或过期 nonce 都重新发 401，
+        // 非空密码启用严格 Digest 鉴权。首次请   求、错误摘要、伪造或过期 nonce 都重新发 401，
         // 并在查询/修改设备档案、发送上下线事件之前返回，失败请求不能影响现有会话。
         if (password != null && !password.isBlank()) {
             boolean hasAuthorization = request.getHeader(javax.sip.header.AuthorizationHeader.NAME) != null;
             if (!hasAuthorization
                     || !digestAuthHelper.authenticate(request, deviceId, properties.getDomain(), password)) {
+                if (hasAuthorization) {
+                    digestAuthHelper.recordAuthFailure(deviceId);
+                }
+                // 401 限流：同 deviceId 每 5 秒最多回一次挑战。
+                // 鉴权一直不通过时，对端收到 401 会立即重发，形成正反馈风暴；
+                // 限流后多余请求静默丢弃。正常“首包 401 → 带认证重发 → 200”流程不受影响。
+                if (!digestAuthHelper.tryAcquireChallengeSlot(deviceId)) {
+                    log.debug("{} deviceId={} 401 挑战已限流，本次静默丢弃", title, deviceId);
+                    return;
+                }
                 SIPResponse challenge = (SIPResponse) MESSAGE_FACTORY.createResponse(Response.UNAUTHORIZED, request);
                 digestAuthHelper.appendChallenge(HEADER_FACTORY, challenge, deviceId, properties.getDomain());
                 sipSender.send(request.getLocalAddress().getHostAddress(), challenge);
                 if (hasAuthorization) {
-                    log.warn("{} Digest 鉴权失败，已重新发起 401 挑战: deviceId={} from={}",
-                            title, deviceId, requestAddress);
+                    // 失败日志按设备 1 分钟聚合，避免风暴刷盘；附带诊断信息定位 username/realm/URI
+                    if (digestAuthHelper.shouldLogFailure(deviceId)) {
+                        log.warn("{} Digest 鉴权失败，已重新发起 401 挑战: deviceId={} from={} {}",
+                                title, deviceId, requestAddress, digestAuthHelper.describeAuthorization(request));
+                    }
                 } else {
                     log.info("{} deviceId={} 回复 401 挑战", title, deviceId);
                 }
                 return;
             }
+            // 鉴权通过：清空失败计数与封禁标记
+            digestAuthHelper.clearAuthFailure(deviceId);
         }
 
         // 鉴权通过后才允许读取并更新设备档案。

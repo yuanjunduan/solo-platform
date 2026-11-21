@@ -39,9 +39,10 @@ import java.util.UUID;
  * 对账是幂等的（status 写覆盖），重复执行不会有副作用。</p>
  *
  * <h3>ZLM 不可达时的处理</h3>
- * <p>如果某台 ZLM 离线，{@link com.solo.media.client.ZlmRestClient#getMediaList} 内部
- * 抓异常返空列表。本任务会把"这台 ZLM 上所有 status=1 的代理"全标成 status=0 —
- * 这是合理语义（"我们看不到它，所以按不可用处理"），代价是 ZLM 短暂抖动会误标，
+ * <p>如果某台 ZLM 离线（status=0），本轮直接跳过；在线节点调
+ * {@link com.solo.media.client.ZlmRestClient#getMediaList} 失败时内部抓异常返空列表。
+ * 这会把"这台 ZLM 上所有 status=1 的代理"全标成 status=0 —
+ * 这是合理语义（"我们看不到它，所以按不可用处理"），代价是 ZLM 短暂抓动会误标，
  * 下轮对账或用户点"启用"即可恢复。</p>
  */
 @Slf4j
@@ -78,8 +79,15 @@ public class StreamProxyReconciler {
             return;
         }
         try {
-            List<MediaServer> servers = mediaServerMapper.selectList(null);
-            log.info("[拉流代理对账] 巡检开始 instanceId={} 节点数={}", instanceId, servers.size());
+            List<MediaServer> all = mediaServerMapper.selectList(null);
+            // 只对账在线节点（status=1）。离线节点的 status=0 已经表达了“不可用”，
+            // 再拿它去调 getMediaList 只会把网络/鉴权错误变成定时器噪声（每 30s 一条堆栈）；
+            // 节点恢复后由健康探测把 status 拉回 1，下一轮自然重新纳入对账。
+            List<MediaServer> servers = all.stream()
+                    .filter(s -> s.getStatus() != null && s.getStatus() == 1)
+                    .toList();
+            log.info("[拉流代理对账] 巡检开始 instanceId={} 在线节点数={}（总数={}）",
+                    instanceId, servers.size(), all.size());
             int totalCleaned = 0;
             for (MediaServer s : servers) {
                 try {

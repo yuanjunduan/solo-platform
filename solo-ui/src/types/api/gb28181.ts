@@ -108,6 +108,8 @@ export interface GbDeviceDetectResult {
 export interface GbDeviceChannelPageRequest extends PageRequest {
   /** 所属设备国标编码 */
   deviceId?: string
+  /** 来源下级平台国标编码（精确匹配 platform_id） */
+  platformId?: string
   /** 通道国标编码 */
   channelId?: string
   /** 通道名称 */
@@ -129,6 +131,8 @@ export interface GbDeviceChannel {
   id: string
   /** 所属设备国标编码（关联 gb_device.device_id）；通道与分组均必填 */
   deviceId?: string
+  /** 来源接入平台国标编码（发起 Catalog 的注册方；多下级平台时据此区分通道归属，现阶段与 deviceId 同值） */
+  platformId?: string
   /** catalog item 20 位国标码：分组 215业务分组/216虚拟组织；通道 131摄像机/132IPC */
   channelId: string
   /** 设备上报原始名称（仅通道） */
@@ -599,6 +603,69 @@ export interface GbLocalPlatformInfo {
   password?: string
   /** 设备注册有效期（秒） */
   registerExpires?: number
+}
+
+/**
+ * 本平台国标配置（GET/PUT /api/gb28181/local-config）。
+ * 库配置优先于 application yaml；身份项（sipId/sipDomain/sipIp/sipPort）保存后需重启生效。
+ */
+export interface GbLocalConfig {
+  /** 本平台 SIP 国标 ID（20 位） */
+  sipId?: string
+  /** 本平台 SIP 域（ID 前 10 位） */
+  sipDomain?: string
+  /** SIP 监听 IP；空串=自动扫网卡 */
+  sipIp?: string
+  /** SIP 公网 IP（NAT 场景 Via/Contact 使用） */
+  sipPublicIp?: string
+  /** SIP 监听端口 */
+  sipPort?: number
+  /** 鉴权密码，恒为掩码 ****** */
+  password?: string
+  /** 是否已配置密码 */
+  passwordConfigured?: boolean
+  registerExpires?: number
+  keepaliveTimeoutMultiplier?: number
+  /** 手动存活探测超时（毫秒） */
+  detectTimeoutMs?: number
+  useSourceIpAsRemoteAddress?: boolean
+  catalogPageSize?: number
+  catalogAckTimeoutMs?: number
+  catalogPageIntervalMs?: number
+  sendRtpPortStart?: number
+  sendRtpPortEnd?: number
+  /** 身份项有改动待重启生效 */
+  restartRequired?: boolean
+  /** 当前运行中的身份（重启前的实际生效值） */
+  runningSipId?: string
+  runningSipDomain?: string
+  runningSipIp?: string
+  runningSipPort?: number
+  /** db=库配置；yaml=未配置回落配置文件 */
+  source?: 'db' | 'yaml'
+}
+
+/** 保存本平台国标配置请求体 */
+export interface GbLocalConfigSaveRequest {
+  sipId?: string
+  sipDomain?: string
+  /** 空串=自动扫网卡，undefined=沿用 yaml */
+  sipIp?: string
+  sipPublicIp?: string
+  sipPort?: number
+  /** 留空=不修改密码 */
+  password?: string
+  /** true=清空密码（开放模式） */
+  resetPassword?: boolean
+  registerExpires?: number
+  keepaliveTimeoutMultiplier?: number
+  detectTimeoutMs?: number
+  useSourceIpAsRemoteAddress?: boolean
+  catalogPageSize?: number
+  catalogAckTimeoutMs?: number
+  catalogPageIntervalMs?: number
+  sendRtpPortStart?: number
+  sendRtpPortEnd?: number
 }
 
 /** 上级平台配置 */

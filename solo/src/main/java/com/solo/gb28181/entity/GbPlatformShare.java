@@ -31,7 +31,13 @@ public class GbPlatformShare {
     @JsonSerialize(using = ToStringSerializer.class)
     private Long groupId;
 
-    @Schema(description = "通道主键（逻辑关联 gb_device_channel.id 中 parental=0 的行）")
+    @Schema(description = "通道所属设备国标 ID（业务键，与 gb_device_channel 唯一键 device_id+channel_id 对齐；通道重新同步换主键也不影响共享）")
+    private String deviceId;
+
+    @Schema(description = "通道国标码（业务键；对上级暴露码见 exposedCode）")
+    private String channelId;
+
+    @Schema(description = "【仅回滚兼容】通道主键（逻辑关联 gb_device_channel.id），真相以 deviceId+channelId 为准，通道重新同步后可能为空串或旧值")
     @JsonSerialize(using = ToStringSerializer.class)
     private Long resourceId;
 

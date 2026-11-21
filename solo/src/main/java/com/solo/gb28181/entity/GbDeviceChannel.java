@@ -26,6 +26,9 @@ public class GbDeviceChannel {
     @Schema(description = "设备国标 ID")
     private String deviceId;
 
+    @Schema(description = "来源接入平台国标 ID（发起 Catalog 的注册方；多下级平台据此区分通道归属，现阶段与 deviceId 同值）")
+    private String platformId;
+
     @Schema(description = "通道国标 ID（20 位）")
     private String channelId;
 

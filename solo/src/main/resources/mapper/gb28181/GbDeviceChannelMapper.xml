@@ -4,7 +4,7 @@
 
     <insert id="batchUpsertRaw" parameterType="java.util.List" databaseId="mysql" useGeneratedKeys="false">
         INSERT INTO gb_device_channel (
-            id, device_id, channel_id,
+            id, device_id, platform_id, channel_id,
             report_name, name, manufacturer, model, owner, civil_code, block, address,
             parental, safety_way, register_way,
             cert_num, certifiable, secrecy,
@@ -15,7 +15,7 @@
         VALUES
         <foreach collection="list" item="ch" separator=",">
             (
-                #{ch.id}, #{ch.deviceId}, #{ch.channelId},
+                #{ch.id}, #{ch.deviceId}, COALESCE(#{ch.platformId}, ''), #{ch.channelId},
                 #{ch.reportName}, #{ch.name}, #{ch.manufacturer}, #{ch.model},
                 #{ch.owner}, #{ch.civilCode}, #{ch.block}, #{ch.address},
                 #{ch.parental}, #{ch.safetyWay}, #{ch.registerWay},
@@ -26,6 +26,7 @@
             )
         </foreach>
         ON DUPLICATE KEY UPDATE
+            platform_id    = IF(VALUES(platform_id) &lt;&gt; '', VALUES(platform_id), platform_id),
             report_name    = COALESCE(VALUES(report_name), report_name),
             name           = COALESCE(VALUES(name), name),
             manufacturer   = COALESCE(VALUES(manufacturer), manufacturer),
@@ -51,7 +52,7 @@
 
     <insert id="batchUpsertRaw" parameterType="java.util.List" databaseId="postgresql">
         INSERT INTO gb_device_channel (
-            id, device_id, channel_id,
+            id, device_id, platform_id, channel_id,
             report_name, name, manufacturer, model, owner, civil_code, block, address,
             parental, safety_way, register_way,
             cert_num, certifiable, secrecy,
@@ -62,7 +63,7 @@
         VALUES
         <foreach collection="list" item="ch" separator=",">
             (
-                #{ch.id}, #{ch.deviceId}, #{ch.channelId},
+                #{ch.id}, #{ch.deviceId}, COALESCE(#{ch.platformId}, ''), #{ch.channelId},
                 #{ch.reportName}, #{ch.name}, #{ch.manufacturer}, #{ch.model},
                 #{ch.owner}, #{ch.civilCode}, #{ch.block}, #{ch.address},
                 #{ch.parental}, #{ch.safetyWay}, #{ch.registerWay},
@@ -73,6 +74,7 @@
             )
         </foreach>
         ON CONFLICT (device_id, channel_id) DO UPDATE SET
+            platform_id    = CASE WHEN EXCLUDED.platform_id &lt;&gt; '' THEN EXCLUDED.platform_id ELSE gb_device_channel.platform_id END,
             report_name    = COALESCE(EXCLUDED.report_name, gb_device_channel.report_name),
             name           = COALESCE(EXCLUDED.name, gb_device_channel.name),
             manufacturer   = COALESCE(EXCLUDED.manufacturer, gb_device_channel.manufacturer),

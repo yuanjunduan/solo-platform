@@ -321,6 +321,9 @@ const selectedIds = ref<Set<string>>(new Set())
 
 const displayName = (c: GbDeviceChannel) => c.name || c.reportName || c.channelId
 
+/** 通道来源接入平台（多下级平台时区分通道归属；旧数据未回填 platformId 时退回 deviceId） */
+const sourcePlatform = (c: GbDeviceChannel) => c.platformId || c.deviceId || '—'
+
 const loadShared = async (reset = false) => {
   if (!selectedGroupId.value || loadingShared.value) return
   if (reset) {
@@ -722,6 +725,7 @@ onBeforeUnmount(() => {
                 </th>
                 <th class="w-40 px-3 py-2 font-normal">通道名称</th>
                 <th class="w-44 px-3 py-2 font-normal">国标编码</th>
+                <th class="w-44 px-3 py-2 font-normal">来源平台</th>
                 <th class="w-44 px-3 py-2 font-normal">推送码</th>
               </tr>
             </thead>
@@ -735,6 +739,9 @@ onBeforeUnmount(() => {
                 </td>
                 <td class="truncate px-3 py-2" :title="displayName(c)">{{ displayName(c) }}</td>
                 <td class="px-3 py-2 font-mono text-muted-foreground">{{ c.channelId }}</td>
+                <td class="truncate px-3 py-2 font-mono text-muted-foreground" :title="sourcePlatform(c)">
+                  {{ sourcePlatform(c) }}
+                </td>
                 <td class="px-3 py-2 font-mono text-muted-foreground">
                   {{ c.exposedCode || '—' }}
                 </td>
@@ -785,6 +792,9 @@ onBeforeUnmount(() => {
                 @update:model-value="onPickOne(c.id, $event === true)"
               />
               <span class="min-w-0 flex-1 truncate">{{ displayName(c) }}</span>
+              <span class="shrink-0 font-mono text-[10px] text-muted-foreground/80" :title="`来源平台：${sourcePlatform(c)}`">
+                {{ sourcePlatform(c) }}
+              </span>
               <span class="font-mono text-muted-foreground">{{ c.channelId }}</span>
             </label>
             <div

@@ -7,8 +7,29 @@
         <span class="text-[13px] font-medium">通道</span>
 
         <div class="ml-3 flex h-full items-center">
+          <!-- 视图切换放在最前：目录树不是筛选维度，不带计数 -->
           <button
-            v-for="tab in tabs"
+            class="relative flex h-full items-center gap-1.5 px-2 text-[13px] transition-colors"
+            :class="
+              activeKey === 'tree'
+                ? 'font-medium text-foreground'
+                : 'text-muted-foreground hover:text-foreground'
+            "
+            title="按组织目录查看"
+            @click="onTab('tree')"
+          >
+            <Folder class="size-3.5" />
+            目录树
+            <span
+              v-if="activeKey === 'tree'"
+              class="absolute inset-x-2 -bottom-px h-0.5 rounded-full bg-primary"
+            />
+          </button>
+
+          <span class="mx-1 h-4 w-px bg-border" />
+
+          <button
+            v-for="tab in filterTabs"
             :key="tab.key"
             class="relative flex h-full items-center gap-1.5 px-2 text-[13px] transition-colors"
             :class="
@@ -16,6 +37,7 @@
                 ? 'font-medium text-foreground'
                 : 'text-muted-foreground hover:text-foreground'
             "
+            :title="tab.hint"
             @click="onTab(tab.key)"
           >
             {{ tab.label }}
@@ -76,7 +98,7 @@
           class="h-7 w-44 rounded-md bg-transparent px-2 text-[13px] outline-none placeholder:text-muted-foreground focus:bg-muted/70"
           placeholder="请输入通道名称"
         />
-        <GbDeviceSelect v-model="deviceIdQ" />
+        <GbPlatformSelect v-model="platformIdQ" />
 
         <span v-if="hasCondition" class="text-xs text-muted-foreground">
           匹配 {{ resource.total.value }} 条
@@ -98,7 +120,15 @@
 
       <!-- 列表 -->
       <div v-show="activeKey !== 'tree'" ref="scrollerRef" class="min-h-0 flex-1 overflow-auto">
-        <table class="w-full table-fixed border-collapse text-left text-[13px]">
+        <!-- 未选下级平台：不查询，先引导选择 -->
+        <div
+          v-if="!platformIdQ"
+          class="flex flex-col items-center gap-3 py-16 text-[13px] text-muted-foreground"
+        >
+          <div>请先选择下级平台，再查看其上报的通道目录</div>
+          <GbPlatformSelect v-model="platformIdQ" />
+        </div>
+        <table v-else class="w-full table-fixed border-collapse text-left text-[13px]">
           <thead class="sticky top-0 z-10">
             <tr class="bg-card text-xs text-muted-foreground">
               <th class="w-10 px-3 py-2">
@@ -267,7 +297,7 @@
         </div>
 
         <div
-          v-else-if="!resource.loading.value && resource.items.value.length === 0"
+          v-else-if="platformIdQ && !resource.loading.value && resource.items.value.length === 0"
           class="flex flex-col items-center gap-2 py-16 text-muted-foreground"
         >
           <IconVideoOff class="size-8" />
@@ -294,11 +324,11 @@
       <!-- 目录树：左侧组织树懒加载（每层一次请求），右侧选中组织的通道分页 -->
       <div v-show="activeKey === 'tree'" class="min-h-0 flex-1 overflow-hidden">
         <div
-          v-if="!deviceIdQ"
+          v-if="!platformIdQ"
           class="flex flex-col items-center gap-3 py-16 text-[13px] text-muted-foreground"
         >
-          <div>目录树按设备展示，请先选择设备</div>
-          <GbDeviceSelect v-model="deviceIdQ" />
+          <div>目录树按下级平台展示，请先选择下级平台</div>
+          <GbPlatformSelect v-model="platformIdQ" />
         </div>
         <div v-else class="flex h-full min-h-0">
           <!-- 左：组织树 -->
@@ -502,7 +532,7 @@ import { IconSearch, IconX, IconFilter, IconLoader2, IconVideoOff } from '@table
 import { Plus, Trash2, Loader2, Folder } from 'lucide-vue-next'
 import GbChannelInspector from '@/features/gb/GbChannelInspector.vue'
 import GbDeviceChannelTree from '@/features/gb/GbDeviceChannelTree.vue'
-import GbDeviceSelect from '@/features/gb/GbDeviceSelect.vue'
+import GbPlatformSelect from '@/features/gb/GbPlatformSelect.vue'
 import RefreshButton from '@/components/RefreshButton.vue'
 import {
   getGbDeviceChannelPageApi,
@@ -510,6 +540,7 @@ import {
   getGbChannelSubtreePageApi,
   batchDeleteGbDeviceChannelApi,
   getGbChannelStatusCountApi,
+  getGbPlatformPageApi,
 } from '@/api/gb28181'
 import { useResource } from '@/shared/composables/useResource'
 import { PERM } from '@/features/access/permissions'
@@ -532,7 +563,10 @@ type TabKey = 'all' | 'group' | 'tree' | 'channel' | 'online' | 'offline' | 'unr
 
 const channelIdQ = ref('')
 const nameQ = ref('')
-const deviceIdQ = ref<string | undefined>(undefined)
+/** 当前下级平台（gb_platform.platform_id）：页面第一维度，未选不查询 */
+const platformIdQ = ref<string | undefined>(undefined)
+/** 首次挂载期间由 onMounted 统一加载，避开自动选平台触发的重复请求 */
+let booted = false
 const activeKey = ref<TabKey>('all')
 const sourceFilter = ref<'__all__' | '1' | '2' | '3'>('__all__')
 const ptzFilter = ref<'__all__' | '0' | '1' | '2' | '3' | '4'>('__all__')
@@ -563,14 +597,14 @@ const counts = ref<Record<TabKey, number>>({
   unregistered: 0,
 })
 
-const tabs = computed(() => [
-  { key: 'all' as const, label: '全部' },
-  { key: 'group' as const, label: '分组' },
-  { key: 'tree' as const, label: '目录树' },
-  { key: 'channel' as const, label: '通道' },
-  { key: 'online' as const, label: '在线' },
-  { key: 'offline' as const, label: '离线' },
-  { key: 'unregistered' as const, label: '未注册' },
+/** 带计数的筛选 tab（目录树是视图切换，不在其中） */
+const filterTabs = computed(() => [
+  { key: 'all' as const, label: '全部', hint: '分组 + 通道 合计' },
+  { key: 'group' as const, label: '分组', hint: '目录分组（组织节点）数' },
+  { key: 'channel' as const, label: '通道', hint: '真实通道数（= 在线 + 离线 + 未注册）' },
+  { key: 'online' as const, label: '在线', hint: '通道在线数' },
+  { key: 'offline' as const, label: '离线', hint: '通道离线数' },
+  { key: 'unregistered' as const, label: '未注册', hint: '通道未注册数' },
 ])
 
 /** tab → 查询参数：分组/通道走 parental；在线等状态走 status（后端自动追加 parental=0） */
@@ -587,39 +621,48 @@ const hasCondition = computed(
   () =>
     !!channelIdQ.value.trim() ||
     !!nameQ.value.trim() ||
-    !!deviceIdQ.value ||
     activeKey.value !== 'all' ||
     sourceFilter.value !== '__all__' ||
     ptzFilter.value !== '__all__',
 )
 
 const resource = useResource<GbDeviceChannelPageRequest, GbDeviceChannel>({
-  fetcher: (q) =>
-    getGbDeviceChannelPageApi({
+  fetcher: (q) => {
+    // 未选下级平台不查询：避免把多个平台上报的目录混在一起
+    if (!platformIdQ.value) return Promise.resolve({ data: { rows: [], total: 0 } })
+    return getGbDeviceChannelPageApi({
       ...q,
       channelId: channelIdQ.value.trim() || undefined,
       name: nameQ.value.trim() || undefined,
-      deviceId: deviceIdQ.value || undefined,
+      platformId: platformIdQ.value,
       source: sourceFilter.value === '__all__' ? undefined : Number(sourceFilter.value),
       ptzType: ptzFilter.value === '__all__' ? undefined : Number(ptzFilter.value),
       ...tabQuery(activeKey.value),
-    }),
+    })
+  },
   initial: { page: 1, pageSize: 50 },
 })
 
 const fetchStatusCount = async () => {
-  const rows = (await getGbChannelStatusCountApi()).data
-  const find = (parental: number, status: string) =>
-    rows.find((r) => r.parental === parental && r.status === status)?.count ?? 0
-  const group = find(1, 'ON')
-  const online = find(0, 'ON')
-  const offline = find(0, 'OFF')
-  const unregistered = find(0, 'UNREGISTERED')
+  // 计数跟随所选平台，与列表口径一致；未选平台时全部归零
+  const rows = platformIdQ.value
+    ? (await getGbChannelStatusCountApi(platformIdQ.value)).data
+    : []
+  const sumWhere = (parental: number, status?: string) =>
+    rows
+      .filter((r) => r.parental === parental && (status === undefined || r.status === status))
+      .reduce((acc, r) => acc + (r.count ?? 0), 0)
+  // 分组没有在线/离线语义：按 parental=1 全量汇总，避免状态非 ON 的分组被漏计
+  const group = sumWhere(1)
+  const online = sumWhere(0, 'ON')
+  const offline = sumWhere(0, 'OFF')
+  const unregistered = sumWhere(0, 'UNREGISTERED')
+  const channel = online + offline + unregistered
   counts.value = {
-    all: group + online + offline + unregistered,
+    all: group + channel,
     group,
-    tree: group + online + offline + unregistered,
-    channel: online + offline + unregistered,
+    tree: 0,
+    channel,
     online,
     offline,
     unregistered,
@@ -665,9 +708,9 @@ const findTreeNode = (
   return null
 }
 
-/** 拉设备根一层：顺带把右侧列表重置到「设备（全部组织）」 */
+/** 拉平台根一层：顺带把右侧列表重置到「设备（全部组织）」 */
 const loadRootTree = async () => {
-  if (!deviceIdQ.value) {
+  if (!platformIdQ.value) {
     treeRootLevel.value = null
     treeRootNodes.value = []
     treeExpanded.value = new Set()
@@ -679,7 +722,7 @@ const loadRootTree = async () => {
   }
   treeLoading.value = true
   try {
-    treeRootLevel.value = (await getGbDeviceChannelTreeChildrenApi(deviceIdQ.value)).data ?? null
+    treeRootLevel.value = (await getGbDeviceChannelTreeChildrenApi(platformIdQ.value)).data ?? null
     treeRootNodes.value = treeRootLevel.value?.children ?? []
     treeExpanded.value = new Set()
     treeNodeLoading.value = new Set()
@@ -705,7 +748,7 @@ const onToggleTree = async (code: string) => {
 
   treeNodeLoading.value = new Set(treeNodeLoading.value).add(code)
   try {
-    const level = (await getGbDeviceChannelTreeChildrenApi(deviceIdQ.value!, code)).data
+    const level = (await getGbDeviceChannelTreeChildrenApi(platformIdQ.value!, code)).data
     node.children = level?.children ?? []
     node.hasChildren = !!level?.children?.length
     node.subtreeChannelCount = level?.subtreeChannelCount ?? node.subtreeChannelCount
@@ -734,7 +777,7 @@ const selectOrg = async (code: string, node?: GbDeviceChannelTreeNode) => {
 }
 
 const loadTreeChannels = async () => {
-  if (!deviceIdQ.value) {
+  if (!platformIdQ.value) {
     treeChannels.value = []
     treeChannelTotal.value = 0
     return
@@ -744,7 +787,8 @@ const loadTreeChannels = async () => {
     const res = await getGbChannelSubtreePageApi({
       page: treeChannelPage.value,
       pageSize: TREE_PAGE_SIZE,
-      deviceId: deviceIdQ.value,
+      // 目录上报时 device_id 即平台编码（一个平台一个目录会话），树接口仍按 deviceId 查
+      deviceId: platformIdQ.value,
       orgCode: treeSelectedCode.value || undefined,
       includeSubtree: includeSubtree.value,
       keyword: treeKeyword.value.trim() || undefined,
@@ -797,15 +841,17 @@ const triggerSearch = () => {
   }, 300)
 }
 watch([channelIdQ, nameQ], triggerSearch)
-watch(deviceIdQ, () => {
+watch(platformIdQ, async () => {
   cursor.value = 0
   clearChecked()
   selected.value = null
+  // 首次由 onMounted 统一加载，避免自动选平台触发重复请求
+  if (!booted) return
   if (activeKey.value === 'tree') {
-    loadRootTree()
+    await Promise.all([loadRootTree(), fetchStatusCount()])
     return
   }
-  resource.search()
+  await Promise.all([resource.search(), fetchStatusCount()])
 })
 watch(sourceFilter, () => {
   cursor.value = 0
@@ -834,7 +880,7 @@ const onTab = (key: TabKey) => {
 const onClear = () => {
   channelIdQ.value = ''
   nameQ.value = ''
-  deviceIdQ.value = undefined
+  // 下级平台是页面第一维度，清除只针对搜索/筛选条件
   activeKey.value = 'all'
   sourceFilter.value = '__all__'
   ptzFilter.value = '__all__'
@@ -1048,9 +1094,23 @@ const onGlobalKeydown = (e: KeyboardEvent) => {
 /* ---------------- 生命周期 / observer ---------------- */
 let observer: IntersectionObserver | null = null
 
+/** 进入页面自动选中第一个已登记下级平台；平台多时用户可手工切换 */
+const ensurePlatformSelected = async () => {
+  if (platformIdQ.value) return
+  try {
+    const rows = (await getGbPlatformPageApi({ page: 1, pageSize: 200 })).data.rows ?? []
+    const pick = rows.find((p) => p.status === 1) ?? rows.find((p) => p.enabled === 1) ?? rows[0]
+    if (pick) platformIdQ.value = pick.platformId
+  } catch {
+    // 拉不到列表就保持未选，页面空态里有选择入口
+  }
+}
+
 onMounted(async () => {
   window.addEventListener('keydown', onGlobalKeydown)
+  await ensurePlatformSelected()
   await Promise.all([resource.load(true), fetchStatusCount()])
+  booted = true
   observer = new IntersectionObserver(
     (entries) => {
       if (activeKey.value === 'tree') return

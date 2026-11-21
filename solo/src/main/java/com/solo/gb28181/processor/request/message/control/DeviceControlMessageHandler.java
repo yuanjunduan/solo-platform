@@ -141,7 +141,8 @@ public class DeviceControlMessageHandler extends SipRequestProcessorBase impleme
         if (channel != null && channel.getId() != null) {
             GbPlatformShare share = shareMapper.selectOne(new LambdaQueryWrapper<GbPlatformShare>()
                     .eq(GbPlatformShare::getPlatformId, platformId)
-                    .eq(GbPlatformShare::getResourceId, channel.getId())
+                    .eq(GbPlatformShare::getDeviceId, channel.getDeviceId())
+                    .eq(GbPlatformShare::getChannelId, channel.getChannelId())
                     .last("LIMIT 1"));
             if (share != null) {
                 return channel;
@@ -153,10 +154,21 @@ public class DeviceControlMessageHandler extends SipRequestProcessorBase impleme
                 .eq(GbPlatformShare::getPlatformId, platformId)
                 .eq(GbPlatformShare::getExposedCode, deviceId)
                 .last("LIMIT 1"));
-        if (share == null || share.getResourceId() == null) {
+        if (share == null) {
             return null;
         }
-        return channelMapper.selectById(share.getResourceId());
+        return resolveShareChannel(share);
+    }
+
+    /** 按业务键定位 share 指向的当前通道；旧数据未回填业务键时退回 resource_id */
+    private GbDeviceChannel resolveShareChannel(GbPlatformShare share) {
+        if (share.getDeviceId() != null && !share.getDeviceId().isBlank()
+                && share.getChannelId() != null && !share.getChannelId().isBlank()) {
+            return channelMapper.selectOne(new LambdaQueryWrapper<GbDeviceChannel>()
+                    .eq(GbDeviceChannel::getDeviceId, share.getDeviceId())
+                    .eq(GbDeviceChannel::getChannelId, share.getChannelId()));
+        }
+        return share.getResourceId() == null ? null : channelMapper.selectById(share.getResourceId());
     }
 
     /** 回 SIP 状态码，应答异常只记日志 */

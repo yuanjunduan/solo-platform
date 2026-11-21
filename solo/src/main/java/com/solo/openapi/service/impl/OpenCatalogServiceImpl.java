@@ -14,8 +14,9 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
+import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Objects;
+import java.util.Map;
 
 @Service
 @RequiredArgsConstructor
@@ -71,26 +72,35 @@ public class OpenCatalogServiceImpl implements OpenCatalogService {
     }
 
     /**
-     * 推送码只在共享撞码时分配，且不收回，同一通道跨多个上级复用同一码，因此要按 resourceId 去重。
+     * 推送码只在共享撞码时分配，且不收回，同一通道跨多个上级复用同一码，因此要按业务键
+     * (device_id, channel_id) 去重（主键会随目录重新同步变化，不能当外键）。
      * 设备按推送码定位时，以推送码为准，忽略请求里的 deviceId。
      */
     private GbDeviceChannel findSharedChannel(String channelId) {
-        List<Long> resourceIds = shareMapper.selectList(new LambdaQueryWrapper<GbPlatformShare>()
-                        .eq(GbPlatformShare::getExposedCode, channelId)
-                        .select(GbPlatformShare::getResourceId))
-                .stream()
-                .map(GbPlatformShare::getResourceId)
-                .filter(Objects::nonNull)
-                .distinct()
-                .toList();
-        if (resourceIds.size() > 1) {
+        List<GbPlatformShare> shares = shareMapper.selectList(new LambdaQueryWrapper<GbPlatformShare>()
+                .eq(GbPlatformShare::getExposedCode, channelId));
+        Map<String, GbPlatformShare> byKey = new LinkedHashMap<>();
+        for (GbPlatformShare s : shares) {
+            byKey.putIfAbsent((s.getDeviceId() == null ? "" : s.getDeviceId()) + '\u0000'
+                    + (s.getChannelId() == null ? "" : s.getChannelId()), s);
+        }
+        if (byKey.size() > 1) {
             throw new OpenApiException(OpenApiErrorCode.PARAM_INVALID,
                     "推送码对应多个通道，无法定位: " + channelId);
         }
-        if (resourceIds.isEmpty()) {
+        if (byKey.isEmpty()) {
             return null;
         }
-        GbDeviceChannel channel = channelMapper.selectById(resourceIds.getFirst());
+        GbPlatformShare share = byKey.values().iterator().next();
+        GbDeviceChannel channel;
+        if (StringUtils.hasText(share.getDeviceId()) && StringUtils.hasText(share.getChannelId())) {
+            channel = channelMapper.selectOne(new LambdaQueryWrapper<GbDeviceChannel>()
+                    .eq(GbDeviceChannel::getDeviceId, share.getDeviceId())
+                    .eq(GbDeviceChannel::getChannelId, share.getChannelId()));
+        } else {
+            // 旧数据未回填业务键：退回主键
+            channel = share.getResourceId() == null ? null : channelMapper.selectById(share.getResourceId());
+        }
         if (channel != null) {
             channel.setExposedCode(channelId);
         }

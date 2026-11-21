@@ -24,7 +24,8 @@
     <div class="min-h-0 flex-1">
       <KeepAlive>
         <ChildPlatform v-if="active === 'child'" />
-        <ParentPlatform v-else />
+        <ParentPlatform v-else-if="active === 'parent'" />
+        <LocalPlatformConfig v-else />
       </KeepAlive>
     </div>
   </div>
@@ -34,10 +35,12 @@
 import { ref } from 'vue'
 import ChildPlatform from '@/features/gb/ChildPlatform.vue'
 import ParentPlatform from '@/features/gb/ParentPlatform.vue'
+import LocalPlatformConfig from '@/features/gb/LocalPlatformConfig.vue'
 
-const active = ref<'child' | 'parent'>('child')
+const active = ref<'child' | 'parent' | 'local'>('child')
 const tabs = [
   { key: 'child' as const, label: '下级平台' },
   { key: 'parent' as const, label: '上级平台' },
+  { key: 'local' as const, label: '本平台配置' },
 ]
 </script>

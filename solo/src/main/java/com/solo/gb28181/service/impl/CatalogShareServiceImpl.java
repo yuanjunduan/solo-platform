@@ -35,7 +35,9 @@ import java.util.stream.Collectors;
  * <p>{@code gb_platform_share} <b>只存通道</b>（{@code gb_device_channel} 中 parental=0 的行）。
  * 分组是本平台内部的目录组织，当前不推送给上级（Catalog XML 只发通道 Item）。</p>
  * <p>share 表与推送分组（{@code gb_platform_group}）关联：UI 强制先在弹窗左侧选中分组才能挂载。
- * 同一通道在同一平台下只能挂载一次（{@code uk_platform_resource}），换组要先卸载旧组。
+ * 同一通道在同一平台下只能挂载一次（{@code uk_platform_channel}），换组要先卸载旧组。
+ * <p><b>本表的真实键是 (device_id, channel_id)</b>：通道重新同步会物理删行换雪花主键，
+ * 若拿主键当外键，共享会在重报后指向悬空行。{@code resource_id} 仅为回滚兼容保留，不参与任何查询。
  * Catalog 响应 / INVITE 反查走全量（不分组）路径——上级不关心"挂在哪个组里"。</p>
  * <p>撞码检测是<b>平台级</b>的：上级看到扁平 DeviceID 空间，跨组同码也会让上级 INVITE 认错通道。</p>
  * <p>{@link #shareTree} 仍返回三级树（设备 → 分组 → 通道）供旧勾选 UI 用；前端契约保留 g_/c_ 前缀。</p>
@@ -109,7 +111,9 @@ public class CatalogShareServiceImpl implements CatalogShareService {
             for (GbDeviceChannel it : entry.getValue()) {
                 boolean isGroup = it.getParental() != null && it.getParental() == 1;
                 GbShareTreeNodeResponse child = new GbShareTreeNodeResponse();
-                child.setId((isGroup ? GROUP_PREFIX : CHANNEL_PREFIX) + it.getId());
+                child.setId(isGroup
+                        ? GROUP_PREFIX + it.getId()
+                        : CHANNEL_PREFIX + it.getDeviceId() + "_" + it.getChannelId());
                 String name = (it.getName() == null || it.getName().isBlank()) ? "-" : it.getName();
                 child.setLabel(name + " (" + it.getChannelId() + ")");
                 child.setType(isGroup ? "GROUP" : "CHANNEL");
@@ -122,14 +126,14 @@ public class CatalogShareServiceImpl implements CatalogShareService {
 
     @Override
     public GbPlatformSharedResponse getShared(Long platformId) {
-        // 全量（不分组）：本表只存通道，节点 id 统一 c_ 前缀
+        // 全量（不分组）：本表只存通道，节点 id 用业务键（主键会随目录重同步变化）
         List<GbPlatformShare> shares = shareMapper.selectList(
                 new LambdaQueryWrapper<GbPlatformShare>()
                         .eq(GbPlatformShare::getPlatformId, platformId));
 
         GbPlatformSharedResponse resp = new GbPlatformSharedResponse();
         List<String> nodeIds = shares.stream()
-                .map(s -> CHANNEL_PREFIX + s.getResourceId())
+                .map(s -> CHANNEL_PREFIX + s.getDeviceId() + "_" + s.getChannelId())
                 .collect(Collectors.toList());
         resp.setChannelIds(nodeIds);
         return resp;
@@ -198,18 +202,10 @@ public class CatalogShareServiceImpl implements CatalogShareService {
         }
 
         if (!shares.isEmpty()) {
-            List<Long> resourceIds = shares.stream()
-                    .map(GbPlatformShare::getResourceId)
-                    .filter(Objects::nonNull)
-                    .distinct()
-                    .toList();
-            Map<Long, GbDeviceChannel> channelById = resourceIds.isEmpty()
-                    ? Map.of()
-                    : channelMapper.selectBatchIds(resourceIds).stream()
-                            .collect(Collectors.toMap(GbDeviceChannel::getId, c -> c, (a, b) -> a));
+            Map<GbPlatformShare, GbDeviceChannel> channelByShare = resolveChannels(shares);
             // 厂商/型号/归属/IP 通常只在设备表维护：批量取回后按 deviceId 回填到通道，
             // 报文里这几项才不会因为通道行为空而整段缺失（上级会当成非法节点）
-            Set<String> deviceGbIds = channelById.values().stream()
+            Set<String> deviceGbIds = channelByShare.values().stream()
                     .map(GbDeviceChannel::getDeviceId)
                     .filter(StringUtils::hasText)
                     .collect(Collectors.toSet());
@@ -219,7 +215,7 @@ public class CatalogShareServiceImpl implements CatalogShareService {
                                     .in(GbDevice::getDeviceId, deviceGbIds)).stream()
                             .collect(Collectors.toMap(GbDevice::getDeviceId, d -> d, (a, b) -> a));
             for (GbPlatformShare s : shares) {
-                GbDeviceChannel c = channelById.get(s.getResourceId());
+                GbDeviceChannel c = channelByShare.get(s);
                 if (c == null) {
                     continue;
                 }
@@ -360,39 +356,60 @@ public class CatalogShareServiceImpl implements CatalogShareService {
         }
         GbPlatformGroup group = requireOwnedGroup(platformId, groupId);
 
-        // 1) 拉资源实体
+        // 1) 拉本次要挂载的通道实体（入参仍是主键：UI 列表刚查出来的，主键一定有效）
         List<GbDeviceChannel> resources = channelMapper.selectBatchIds(resourceIds);
         if (resources.isEmpty()) {
             return 0;
         }
-        Map<Long, GbDeviceChannel> resourceById = resources.stream()
-                .collect(Collectors.toMap(GbDeviceChannel::getId, c -> c, (a, b) -> a));
+        Map<String, GbDeviceChannel> resourceByKey = resources.stream()
+                .collect(Collectors.toMap(CatalogShareServiceImpl::channelKey, c -> c, (a, b) -> a));
 
-        // 2) 查该平台所有 share（本批若有重复 / 已挂其他组会一起出现 → 全部幂等跳过）
-        //    uk_platform_resource (platform_id, resource_id) 唯一：同一资源在本平台任何组都已挂则
-        //    不能再加；同组重复添加也是幂等跳过。
+        // 2) 该平台已有 share（按平台全量取回；判定一律按业务键 (device_id, channel_id)，
+        //    通道重新同步换过主键也能认出"已挂载"）
         List<GbPlatformShare> existing = shareMapper.selectList(
                 new LambdaQueryWrapper<GbPlatformShare>()
-                        .eq(GbPlatformShare::getPlatformId, platformId)
-                        .in(GbPlatformShare::getResourceId, resourceIds));
+                        .eq(GbPlatformShare::getPlatformId, platformId));
+        Map<GbPlatformShare, GbDeviceChannel> existingChannels = resolveChannels(existing);
+
         // 记录"已挂本组"与"已挂其他组"——后者要让用户知道在哪组，不能静默跳过
-        Set<Long> alreadySharedInGroup = new HashSet<>();
-        Set<Long> alreadySharedInOtherGroup = new HashSet<>();
+        Set<String> alreadySharedInGroup = new HashSet<>();
+        Set<String> alreadySharedInOtherGroup = new HashSet<>();
+        Map<String, Long> groupIdByKey = new HashMap<>();
+        // 撞码是平台级命名空间的问题：上级平台看到的是扁平的 DeviceID 空间，A 组的 34020...0001
+        // 和 B 组另一台设备的同码通道推上去就是两个同码 Item，上级 INVITE 必然认错通道。
+        // 分组只是本平台 admin UI 的组织结构，对上级不可见（Catalog XML 靠 channel.parent_id 表达层级）。
+        Set<String> historyChannelIds = new HashSet<>();
+        List<GbPlatformShare> staleResourceIds = new ArrayList<>();
         for (GbPlatformShare s : existing) {
-            if (groupId.equals(s.getGroupId())) {
-                alreadySharedInGroup.add(s.getResourceId());
-            } else {
-                alreadySharedInOtherGroup.add(s.getResourceId());
+            GbDeviceChannel c = existingChannels.get(s);
+            if (c == null) {
+                continue;   // 通道已不存在，share 行交给目录清理逻辑处理
             }
+            String key = channelKey(c);
+            if (!StringUtils.hasText(s.getChannelId()) || !Objects.equals(s.getResourceId(), c.getId())) {
+                // 旧数据未写业务键，或通道重新同步换了主键：按当前通道刷新一次（resource_id 仅回滚用）
+                s.setDeviceId(c.getDeviceId());
+                s.setChannelId(c.getChannelId());
+                s.setResourceId(c.getId());
+                staleResourceIds.add(s);
+            }
+            if (c.getChannelId() != null) {
+                historyChannelIds.add(c.getChannelId());
+            }
+            if (groupId.equals(s.getGroupId())) {
+                alreadySharedInGroup.add(key);
+            } else {
+                alreadySharedInOtherGroup.add(key);
+                groupIdByKey.putIfAbsent(key, s.getGroupId());
+            }
+        }
+        if (!staleResourceIds.isEmpty()) {
+            Db.updateBatchById(staleResourceIds);
         }
         if (!alreadySharedInOtherGroup.isEmpty()) {
             // 找一下被占用的组名，给出更友好的错误信息
             List<GbPlatformGroup> occupiedGroups = groupMapper.selectBatchIds(
-                    shareMapper.selectList(new LambdaQueryWrapper<GbPlatformShare>()
-                                    .eq(GbPlatformShare::getPlatformId, platformId)
-                                    .in(GbPlatformShare::getResourceId, alreadySharedInOtherGroup)
-                                    .select(GbPlatformShare::getGroupId))
-                            .stream().map(GbPlatformShare::getGroupId).distinct().toList());
+                    new ArrayList<>(groupIdByKey.values()));
             String groupNames = occupiedGroups.stream()
                     .map(g -> "「" + g.getName() + "」")
                     .collect(Collectors.joining("、"));
@@ -400,84 +417,55 @@ public class CatalogShareServiceImpl implements CatalogShareService {
                     "所选资源中 " + alreadySharedInOtherGroup.size() + " 项已挂载到其他分组（" + groupNames + "），请先在对应分组中卸载后再添加到「" + group.getName() + "」");
         }
 
-        // 3) 查"该平台已有 share"的 channelId 用于撞码检测。
-        //    ！！必须按 platform_id 全量查，不能限定 group_id ！！
-        //    撞码是平台级命名空间的问题：上级平台看到的是扁平的 DeviceID 空间，A 组的 34020...0001
-        //    和 B 组另一台设备的同码通道推上去就是两个同码 Item，上级 INVITE 必然认错通道。
-        //    分组只是本平台 admin UI 的组织结构，对上级不可见（Catalog XML 靠 channel.parent_id 表达层级）。
-        Set<String> historyChannelIds = new HashSet<>();
-        List<Long> existingChannelResourceIds = shareMapper.selectList(
-                new LambdaQueryWrapper<GbPlatformShare>()
-                        .eq(GbPlatformShare::getPlatformId, platformId)
-                        .select(GbPlatformShare::getResourceId))
-                .stream()
-                .map(GbPlatformShare::getResourceId)
-                .filter(Objects::nonNull)
-                .toList();
-        if (!existingChannelResourceIds.isEmpty()) {
-            channelMapper.selectList(
-                            new LambdaQueryWrapper<GbDeviceChannel>()
-                                    .in(GbDeviceChannel::getId, existingChannelResourceIds)
-                                    .select(GbDeviceChannel::getChannelId))
-                    .forEach(c -> {
-                        if (c.getChannelId() != null) historyChannelIds.add(c.getChannelId());
-                    });
-        }
-
-        // 4) 撞码检测：本批按 channelId 分组，size>1 自身撞码；任一与 historyChannelIds 相交视为撞码
-        Map<String, List<Long>> conflictByChannelId = new HashMap<>();
+        // 3) 撞码检测：本批按 channelId 分组，size>1 自身撞码；任一与 historyChannelIds 相交视为撞码
+        Map<String, List<String>> conflictByChannelId = new HashMap<>();
         for (GbDeviceChannel c : resources) {
-            if (c.getChannelId() == null) {
+            if (c.getChannelId() == null || alreadySharedInGroup.contains(channelKey(c))) {
                 continue;
             }
-            if (alreadySharedInGroup.contains(c.getId())) {
-                continue;
-            }
-            conflictByChannelId.computeIfAbsent(c.getChannelId(), k -> new ArrayList<>()).add(c.getId());
+            conflictByChannelId.computeIfAbsent(c.getChannelId(), k -> new ArrayList<>()).add(channelKey(c));
         }
-        for (Map.Entry<String, List<Long>> e : new ArrayList<>(conflictByChannelId.entrySet())) {
-            if (historyChannelIds.contains(e.getKey()) || e.getValue().size() > 1) {
-                conflictByChannelId.put(e.getKey(), e.getValue());
-            } else {
-                conflictByChannelId.remove(e.getKey());
-            }
-        }
-        Set<Long> needExposed = conflictByChannelId.values().stream()
+        conflictByChannelId.entrySet().removeIf(e -> !historyChannelIds.contains(e.getKey()) && e.getValue().size() <= 1);
+        Set<String> needExposedKeys = conflictByChannelId.values().stream()
                 .flatMap(List::stream)
                 .collect(Collectors.toSet());
 
-        // 4.5) 查"本批通道是否已分码"（按 resource_id 跨平台捞旧码，ADR-020 决策 4 / ADR-026 决策 6
-        //      "已分码不收回"）。同一通道对所有上级复用同一 exposedCode，上级已缓存的旧 DeviceID 不失效。
-        //      虽然 nextExposedChannelCode 是纯函数（同输入同输出），但历史码可能是老 max+1 版本分配的，
-        //      不捞旧码会漂移。
-        Map<Long, String> exposedByResource = new HashMap<>();
-        if (!needExposed.isEmpty()) {
+        // 4) 复用旧暴露码（"已分码不收回"，ADR-020 决策 4 / ADR-026 决策 6）：同一通道对所有上级复用
+        //    同一 exposedCode，上级已缓存的旧 DeviceID 不失效。按业务键跨平台捞（不分 platform_id），
+        //    因为历史码可能是老 max+1 版本分配的，不捞会漂移。
+        Map<String, String> exposedByKey = new HashMap<>();
+        if (!needExposedKeys.isEmpty()) {
+            Set<String> needDeviceIds = new HashSet<>();
+            Set<String> needChannelIds = new HashSet<>();
+            for (GbDeviceChannel c : resources) {
+                if (needExposedKeys.contains(channelKey(c))) {
+                    needDeviceIds.add(c.getDeviceId());
+                    needChannelIds.add(c.getChannelId());
+                }
+            }
             shareMapper.selectList(new LambdaQueryWrapper<GbPlatformShare>()
                             .isNotNull(GbPlatformShare::getExposedCode)
-                            .in(GbPlatformShare::getResourceId, needExposed)
-                            .select(GbPlatformShare::getResourceId, GbPlatformShare::getExposedCode))
-                    .forEach(s -> exposedByResource.putIfAbsent(s.getResourceId(), s.getExposedCode()));
+                            .in(GbPlatformShare::getDeviceId, needDeviceIds)
+                            .in(GbPlatformShare::getChannelId, needChannelIds))
+                    .forEach(s -> exposedByKey.putIfAbsent(channelKey(s.getDeviceId(), s.getChannelId()), s.getExposedCode()));
         }
 
         // 5) 批量插（跳过已挂本组的）
         List<GbPlatformShare> toInsert = new ArrayList<>();
-        for (Long rid : resourceIds) {
-            if (alreadySharedInGroup.contains(rid)) {
-                continue;
-            }
-            GbDeviceChannel res = resourceById.get(rid);
-            if (res == null) {
+        for (GbDeviceChannel res : resources) {
+            String key = channelKey(res);
+            if (alreadySharedInGroup.contains(key)) {
                 continue;
             }
             String exposed = null;
-            if (needExposed.contains(rid)) {
+            if (needExposedKeys.contains(key)) {
                 // 优先复用旧码（跨平台稳定），无旧码才按 (deviceId, channelId) 哈希派生
-                exposed = exposedByResource.get(rid);
+                exposed = exposedByKey.get(key);
                 if (exposed == null) {
                     exposed = gbCodeGenerator.nextExposedChannelCode(res.getDeviceId(), res.getChannelId());
                 }
             }
-            toInsert.add(newShare(platformId, groupId, rid, exposed));
+            toInsert.add(newShare(platformId, groupId, res, exposed));
         }
         if (!toInsert.isEmpty()) {
             Db.saveBatch(toInsert);
@@ -488,7 +476,7 @@ public class CatalogShareServiceImpl implements CatalogShareService {
             List<GbDeviceChannel> addItems = new ArrayList<>(toInsert.size() + 4);
             addItems.addAll(loadGroupChainItems(group));
             for (GbPlatformShare s : toInsert) {
-                GbDeviceChannel c = resourceById.get(s.getResourceId());
+                GbDeviceChannel c = resourceByKey.get(channelKey(s.getDeviceId(), s.getChannelId()));
                 if (c == null) {
                     continue;
                 }
@@ -504,8 +492,8 @@ public class CatalogShareServiceImpl implements CatalogShareService {
             eventPublisher.publishEvent(new ShareChangedEvent(this, platformId));
         }
         log.info("[{}] 批量挂载 platformId={} groupId={} groupName={} 输入={} 新增={} 撞码={}（复用旧码={}） 已挂本组跳过={}",
-                LOG_TAG, platformId, groupId, group.getName(), resourceIds.size(), toInsert.size(),
-                needExposed.size(), exposedByResource.size(), alreadySharedInGroup.size());
+                LOG_TAG, platformId, groupId, group.getName(), resources.size(), toInsert.size(),
+                needExposedKeys.size(), exposedByKey.size(), alreadySharedInGroup.size());
         return toInsert.size();
     }
 
@@ -513,14 +501,26 @@ public class CatalogShareServiceImpl implements CatalogShareService {
     @Transactional
     public boolean removeShare(Long platformId, Long groupId, Long resourceId) {
         requireOwnedGroup(platformId, groupId);
+        // 入参是通道主键（UI 当前列表里的），先解析出业务键；解析不到再退回按主键删（旧数据）
+        GbDeviceChannel channel = resourceId == null ? null : channelMapper.selectById(resourceId);
         // 先取待撤销节点再执行删除：删完 share 行就构造不出 DEL 报文了
-        List<GbDeviceChannel> revoke = loadRevokeItems(platformId, groupId, List.of(resourceId));
-        int n = shareMapper.delete(new LambdaQueryWrapper<GbPlatformShare>()
+        List<GbDeviceChannel> revoke = loadRevokeItems(platformId, groupId,
+                channel == null ? null : List.of(channel));
+        LambdaQueryWrapper<GbPlatformShare> w = new LambdaQueryWrapper<GbPlatformShare>()
                 .eq(GbPlatformShare::getPlatformId, platformId)
-                .eq(GbPlatformShare::getGroupId, groupId)
-                .eq(GbPlatformShare::getResourceId, resourceId));
+                .eq(GbPlatformShare::getGroupId, groupId);
+        if (channel != null) {
+            w.eq(GbPlatformShare::getDeviceId, channel.getDeviceId())
+                    .eq(GbPlatformShare::getChannelId, channel.getChannelId());
+        } else {
+            w.eq(GbPlatformShare::getResourceId, resourceId);
+        }
+        int n = shareMapper.delete(w);
         if (n > 0) {
-            log.info("[{}] 卸载 platformId={} groupId={} resourceId={}", LOG_TAG, platformId, groupId, resourceId);
+            log.info("[{}] 卸载 platformId={} groupId={} resourceId={} deviceId={} channelId={}",
+                    LOG_TAG, platformId, groupId, resourceId,
+                    channel == null ? null : channel.getDeviceId(),
+                    channel == null ? null : channel.getChannelId());
             // 上级只对显式 DEL 做删除，仅重推全量快照会让节点永远留在上级目录里
             sendRevokeEvents(platformId, revoke);
             eventPublisher.publishEvent(new ShareChangedEvent(this, platformId));
@@ -685,39 +685,40 @@ public class CatalogShareServiceImpl implements CatalogShareService {
      * 目录里的旧节点永远不会消失。</p>
      *
      * @param groupId     限某分组；null = 不限
-     * @param resourceIds 限某几个通道；null/空 = 不限
+     * @param channels    限某几条通道（按业务键匹配）；null/空 = 不限
      */
-    private List<GbDeviceChannel> loadRevokeItems(Long platformId, Long groupId, List<Long> resourceIds) {
-        return doLoadChannelItems(platformId, groupId == null ? null : List.of(groupId), resourceIds);
+    private List<GbDeviceChannel> loadRevokeItems(Long platformId, Long groupId, List<GbDeviceChannel> channels) {
+        return doLoadChannelItems(platformId, groupId == null ? null : List.of(groupId), channels);
     }
 
     /**
      * 按分组集合取挂载通道节点；{@code groupIdSet} 为 null/空 时不限分组（清空平台用）。
      * 分组改码时需要一次性拿整棵子树下的通道。
      */
-    private List<GbDeviceChannel> doLoadChannelItems(Long platformId, List<Long> groupIdSet, List<Long> resourceIds) {
+    private List<GbDeviceChannel> doLoadChannelItems(Long platformId, List<Long> groupIdSet, List<GbDeviceChannel> channels) {
         LambdaQueryWrapper<GbPlatformShare> w = new LambdaQueryWrapper<GbPlatformShare>()
                 .eq(GbPlatformShare::getPlatformId, platformId);
         if (groupIdSet != null && !groupIdSet.isEmpty()) {
             w.in(GbPlatformShare::getGroupId, groupIdSet);
         }
-        if (resourceIds != null && !resourceIds.isEmpty()) {
-            w.in(GbPlatformShare::getResourceId, resourceIds);
-        }
         List<GbPlatformShare> shares = shareMapper.selectList(w);
         if (shares.isEmpty()) {
             return List.of();
         }
+        Map<GbPlatformShare, GbDeviceChannel> channelByShare = resolveChannels(shares);
+        Set<String> onlyKeys = channels == null || channels.isEmpty()
+                ? Set.of()
+                : channels.stream().map(CatalogShareServiceImpl::channelKey).collect(Collectors.toSet());
         Set<Long> groupIds = shares.stream().map(GbPlatformShare::getGroupId).collect(Collectors.toSet());
         Map<Long, String> codeByGroupId = groupMapper.selectBatchIds(groupIds).stream()
                 .collect(Collectors.toMap(GbPlatformGroup::getId, GbPlatformGroup::getCode, (a, b) -> a));
-        Set<Long> resIds = shares.stream().map(GbPlatformShare::getResourceId).collect(Collectors.toSet());
-        Map<Long, GbDeviceChannel> channelById = channelMapper.selectBatchIds(resIds).stream()
-                .collect(Collectors.toMap(GbDeviceChannel::getId, c -> c, (a, b) -> a));
         List<GbDeviceChannel> items = new ArrayList<>(shares.size());
         for (GbPlatformShare s : shares) {
-            GbDeviceChannel c = channelById.get(s.getResourceId());
+            GbDeviceChannel c = channelByShare.get(s);
             if (c == null) {
+                continue;
+            }
+            if (!onlyKeys.isEmpty() && !onlyKeys.contains(channelKey(c))) {
                 continue;
             }
             // 与 loadSharedCatalogItems 保持一致：通道的 ParentID = 所在分组的 GB 码，
@@ -881,6 +882,60 @@ public class CatalogShareServiceImpl implements CatalogShareService {
         return StringUtils.hasText(keyword) ? keyword.trim() : null;
     }
 
+    /** 业务键：通道的稳定标识（device_id + channel_id；主键会随目录重新同步变化，不能当外键） */
+    private static String channelKey(String deviceId, String channelId) {
+        return (deviceId == null ? "" : deviceId) + '\u0000' + (channelId == null ? "" : channelId);
+    }
+
+    private static String channelKey(GbDeviceChannel c) {
+        return channelKey(c.getDeviceId(), c.getChannelId());
+    }
+
+    /**
+     * 按业务键把 share 行解析成当前通道实体，key = share 对象自身（同一通道可被多个上级共享）。
+     *
+     * <p>不能用 resource_id 直查：通道重新同步（deleteByDeviceId / 删除失效通道后重报）是
+     * 物理删行，主键会变；只有 (device_id, channel_id) 稳定。旧数据业务键未回填时退回
+     * resource_id 查询；通道已不存在时该 share 不出现在结果里，由调用方跳过。</p>
+     */
+    private Map<GbPlatformShare, GbDeviceChannel> resolveChannels(List<GbPlatformShare> shares) {
+        Map<GbPlatformShare, GbDeviceChannel> out = new IdentityHashMap<>();
+        if (shares == null || shares.isEmpty()) {
+            return out;
+        }
+        Set<String> deviceIds = new HashSet<>();
+        Set<String> channelIds = new HashSet<>();
+        Set<Long> legacyIds = new HashSet<>();
+        for (GbPlatformShare s : shares) {
+            if (StringUtils.hasText(s.getDeviceId()) && StringUtils.hasText(s.getChannelId())) {
+                deviceIds.add(s.getDeviceId());
+                channelIds.add(s.getChannelId());
+            } else if (s.getResourceId() != null) {
+                legacyIds.add(s.getResourceId());
+            }
+        }
+        Map<String, GbDeviceChannel> byKey = new HashMap<>();
+        if (!deviceIds.isEmpty()) {
+            for (GbDeviceChannel c : channelMapper.selectList(new LambdaQueryWrapper<GbDeviceChannel>()
+                    .in(GbDeviceChannel::getDeviceId, deviceIds)
+                    .in(GbDeviceChannel::getChannelId, channelIds))) {
+                byKey.putIfAbsent(channelKey(c), c);
+            }
+        }
+        Map<Long, GbDeviceChannel> byId = legacyIds.isEmpty() ? Map.of()
+                : channelMapper.selectBatchIds(legacyIds).stream()
+                        .collect(Collectors.toMap(GbDeviceChannel::getId, c -> c, (a, b) -> a));
+        for (GbPlatformShare s : shares) {
+            GbDeviceChannel c = StringUtils.hasText(s.getChannelId())
+                    ? byKey.get(channelKey(s.getDeviceId(), s.getChannelId()))
+                    : byId.get(s.getResourceId());
+            if (c != null) {
+                out.put(s, c);
+            }
+        }
+        return out;
+    }
+
     /**
      * 校验分组存在且属于该 platformId。抛 ServiceException 让全局异常处理统一翻译。
      */
@@ -895,11 +950,13 @@ public class CatalogShareServiceImpl implements CatalogShareService {
         return g;
     }
 
-    private static GbPlatformShare newShare(Long platformId, Long groupId, Long resourceId, String exposedCode) {
+    private static GbPlatformShare newShare(Long platformId, Long groupId, GbDeviceChannel channel, String exposedCode) {
         GbPlatformShare row = new GbPlatformShare();
         row.setPlatformId(platformId);
         row.setGroupId(groupId);
-        row.setResourceId(resourceId);
+        row.setDeviceId(channel.getDeviceId());
+        row.setChannelId(channel.getChannelId());
+        row.setResourceId(channel.getId());    // 仅回滚兼容，查询一律走业务键
         row.setExposedCode(exposedCode);
         return row;
     }

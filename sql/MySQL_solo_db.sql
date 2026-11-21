@@ -430,6 +430,39 @@ VALUES (1, 1, 1);
 --  2/5  国标模块（设备 / 通道 / 云台 / 级联 / 录像 / 报警 / 流媒体）
 -- ============================================================
 
+-- 本平台国标身份与接入参数（单行表）。字段为 NULL 表示沿用 application yaml；
+-- id/domain/ip/port 属平台身份，写库后需重启才生效，运行期只热更其余字段。
+DROP TABLE IF EXISTS gb_local_config;
+CREATE TABLE gb_local_config
+(
+    id                              bigint      NOT NULL COMMENT '固定单行主键，恒为 1',
+    sip_id                          varchar(50)          DEFAULT NULL COMMENT '本平台 SIP 国标 ID（20 位）',
+    sip_domain                      varchar(50)          DEFAULT NULL COMMENT '本平台 SIP 域（ID 前 10 位）',
+    sip_ip                          varchar(64)          DEFAULT NULL COMMENT 'SIP 监听 IP，空串=自动扫网卡，NULL=沿用 yaml',
+    sip_public_ip                   varchar(64)          DEFAULT NULL COMMENT 'SIP 公网 IP（NAT 场景 Via/Contact 使用）',
+    sip_port                        int                  DEFAULT NULL COMMENT 'SIP 监听端口（修改后需重启）',
+    password                        varchar(100)         DEFAULT NULL COMMENT '设备接入 Digest 鉴权密码',
+    register_expires                int                  DEFAULT NULL COMMENT '设备注册有效期（秒）',
+    keepalive_timeout_multiplier    int                  DEFAULT NULL COMMENT '心跳超时倍数',
+    detect_timeout_ms               bigint               DEFAULT NULL COMMENT '手动存活探测超时（毫秒）',
+    use_source_ip_as_remote_address tinyint              DEFAULT NULL COMMENT '优先用报文源地址作为设备地址 0/1',
+    catalog_page_size               int                  DEFAULT NULL COMMENT 'Catalog 响应单包 Item 数（1/2/4/8）',
+    catalog_ack_timeout_ms          bigint               DEFAULT NULL COMMENT 'Catalog 分片 ACK 超时（毫秒）',
+    catalog_page_interval_ms        bigint               DEFAULT NULL COMMENT 'Catalog 兜底发送间隔（毫秒）',
+    send_rtp_port_start             int                  DEFAULT NULL COMMENT '上级点播本地发送端口段起始',
+    send_rtp_port_end               int                  DEFAULT NULL COMMENT '上级点播本地发送端口段结束',
+    create_time                     datetime    NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    update_time                     datetime    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    PRIMARY KEY (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='本平台国标身份与接入参数（单行，优先于 yaml）';
+
+-- 默认平台身份（首次部署自动初始化，对应原先 application yaml 里的 gb28181 身份项）。
+-- sip_ip 留 NULL = 启动自动扫本机网卡；多网卡/需要固定监听时，登录后在「国标平台 → 本平台配置」
+-- 改成实际网卡 IP 并重启。sip_port / password 请按部署环境核对（主实例用 5061）。
+-- 幂等：已有记录时不覆盖管理面改动
+INSERT IGNORE INTO gb_local_config (id, sip_id, sip_domain, sip_ip, sip_public_ip, sip_port, password)
+VALUES (1, '34020000002000000002', '3402000000', NULL, NULL, 5062, 'solo@1024');
+
 DROP TABLE IF EXISTS gb_device;
 CREATE TABLE gb_device
 (
@@ -469,7 +502,8 @@ DROP TABLE IF EXISTS gb_device_channel;
 CREATE TABLE gb_device_channel
 (
     id           bigint      NOT NULL COMMENT '主键ID',
-    device_id    varchar(50) NOT NULL COMMENT '所属设备国标ID',
+    device_id    varchar(50) NOT NULL COMMENT '所属设备国标ID（目录上报源）',
+    platform_id  varchar(50) NOT NULL DEFAULT '' COMMENT '来源接入平台国标ID（发起 Catalog 的注册方，多下级平台据此区分通道归属）',
     channel_id   varchar(50) NOT NULL COMMENT '通道/分组国标码',
     report_name  varchar(255)         DEFAULT NULL COMMENT '上报原始名称',
     name         varchar(255)         DEFAULT NULL COMMENT '自定义显示名称',
@@ -501,6 +535,7 @@ CREATE TABLE gb_device_channel
     update_time  datetime    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
     PRIMARY KEY (id),
     UNIQUE KEY uk_device_channel (device_id, channel_id),
+    KEY          idx_platform (platform_id, parental),
     KEY          idx_channel_id (channel_id),
     KEY          idx_parent_id (parent_id),
     KEY          idx_device_tree_path (device_id, parental, tree_path),
@@ -687,13 +722,16 @@ CREATE TABLE gb_platform_group
 DROP TABLE IF EXISTS gb_platform_share;
 CREATE TABLE gb_platform_share
 (
-    id           bigint   NOT NULL COMMENT '主键ID',
-    platform_id  bigint   NOT NULL COMMENT '上级平台主键',
-    group_id     bigint   NOT NULL COMMENT '推送分组主键',
-    resource_id  bigint   NOT NULL COMMENT '通道主键',
-    exposed_code varchar(20)       DEFAULT NULL COMMENT '对上级暴露国标码',
-    create_time  datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    id           bigint      NOT NULL COMMENT '主键ID',
+    platform_id  bigint      NOT NULL COMMENT '上级平台主键',
+    group_id     bigint      NOT NULL COMMENT '推送分组主键',
+    device_id    varchar(50) NOT NULL DEFAULT '' COMMENT '通道所属设备国标ID（业务键）',
+    channel_id   varchar(50) NOT NULL DEFAULT '' COMMENT '通道国标码（业务键，上级暴露码见 exposed_code）',
+    resource_id  bigint      NOT NULL COMMENT '【仅回滚兼容】通道主键 gb_device_channel.id，真相以 device_id+channel_id 为准',
+    exposed_code varchar(20)          DEFAULT NULL COMMENT '对上级暴露国标码',
+    create_time  datetime    NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (id),
+    UNIQUE KEY uk_platform_channel (platform_id, device_id, channel_id),
     UNIQUE KEY uk_platform_resource (platform_id, resource_id),
     UNIQUE KEY uk_platform_exposed_code (platform_id, exposed_code),
     KEY          idx_platform_group (platform_id, group_id)

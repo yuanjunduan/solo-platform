@@ -16,6 +16,9 @@ public class GbDeviceChannelPageRequest {
     @Schema(description = "所属设备国标 ID")
     private String deviceId;
 
+    @Schema(description = "来源下级平台国标编码（精确匹配 gb_device_channel.platform_id）")
+    private String platformId;
+
     @Schema(description = "20 位国标通道码")
     private String channelId;
 

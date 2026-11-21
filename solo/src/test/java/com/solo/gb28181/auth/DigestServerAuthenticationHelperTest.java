@@ -54,19 +54,19 @@ class DigestServerAuthenticationHelperTest {
     @BeforeEach
     void setUp() {
         helper = new DigestServerAuthenticationHelper(redisTemplate);
-        lenient.when(redisTemplate.opsForValue()).thenReturn(valueOperations);
-        lenient.when(valueOperations.get(NONCE_KEY)).thenReturn(DEVICE_ID + "\n" + REALM);
-        lenient.when(request.getHeader(AuthorizationHeader.NAME)).thenReturn(authorization);
-        lenient.when(request.getRequestURI()).thenReturn(requestUri);
-        lenient.when(request.getMethod()).thenReturn(Request.REGISTER);
-        lenient.when(authorization.getUsername()).thenReturn(DEVICE_ID);
-        lenient.when(authorization.getRealm()).thenReturn(REALM);
-        lenient.when(authorization.getNonce()).thenReturn(NONCE);
-        lenient.when(authorization.getURI()).thenReturn(requestUri);
-        lenient.when(authorization.getAlgorithm()).thenReturn("MD5");
-        lenient.when(authorization.getQop()).thenReturn("auth");
-        lenient.when(authorization.getParameter("nc")).thenReturn(NC);
-        lenient.when(authorization.getCNonce()).thenReturn(CNONCE);
+        lenient().when(redisTemplate.opsForValue()).thenReturn(valueOperations);
+        lenient().when(valueOperations.get(NONCE_KEY)).thenReturn(DEVICE_ID + "\n" + REALM);
+        lenient().when(request.getHeader(AuthorizationHeader.NAME)).thenReturn(authorization);
+        lenient().when(request.getRequestURI()).thenReturn(requestUri);
+        lenient().when(request.getMethod()).thenReturn(Request.REGISTER);
+        lenient().when(authorization.getUsername()).thenReturn(DEVICE_ID);
+        lenient().when(authorization.getRealm()).thenReturn(REALM);
+        lenient().when(authorization.getNonce()).thenReturn(NONCE);
+        lenient().when(authorization.getURI()).thenReturn(requestUri);
+        lenient().when(authorization.getAlgorithm()).thenReturn("MD5");
+        lenient().when(authorization.getQop()).thenReturn("auth");
+        lenient().when(authorization.getParameter("nc")).thenReturn(NC);
+        lenient().when(authorization.getCNonce()).thenReturn(CNONCE);
     }
 
     @Test

@@ -19,7 +19,7 @@ public interface GbDeviceChannelService extends IService<GbDeviceChannel> {
 
     Page<GbDeviceChannelResponse> pageQuery(GbDeviceChannelPageRequest request);
 
-    List<GbChannelStatusCountVO> statusCount();
+    List<GbChannelStatusCountVO> statusCount(String platformId);
 
     /**
      * 按设备组装目录树：分组为容器（children 挂下级分组/通道），通道为叶子。

@@ -542,6 +542,59 @@ VALUES (1, 1, 1);
 --  2/5  国标模块（设备 / 通道 / 云台 / 级联 / 录像 / 报警 / 流媒体）
 -- ============================================================
 
+-- 本平台国标身份与接入参数（单行表）。字段为 NULL 表示沿用 application yaml；
+-- id/domain/ip/port 属平台身份，写库后需重启才生效，运行期只热更其余字段。
+DROP TABLE IF EXISTS gb_local_config;
+CREATE TABLE gb_local_config
+(
+    id                              bigint NOT NULL,
+    sip_id                          varchar(50) DEFAULT NULL,
+    sip_domain                      varchar(50) DEFAULT NULL,
+    sip_ip                          varchar(64) DEFAULT NULL,
+    sip_public_ip                   varchar(64) DEFAULT NULL,
+    sip_port                        int DEFAULT NULL,
+    password                        varchar(100) DEFAULT NULL,
+    register_expires                int DEFAULT NULL,
+    keepalive_timeout_multiplier    int DEFAULT NULL,
+    detect_timeout_ms               bigint DEFAULT NULL,
+    use_source_ip_as_remote_address smallint DEFAULT NULL,
+    catalog_page_size               int DEFAULT NULL,
+    catalog_ack_timeout_ms          bigint DEFAULT NULL,
+    catalog_page_interval_ms        bigint DEFAULT NULL,
+    send_rtp_port_start             int DEFAULT NULL,
+    send_rtp_port_end               int DEFAULT NULL,
+    create_time                     timestamp(0) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    update_time                     timestamp(0) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (id)
+);
+COMMENT ON TABLE gb_local_config IS '本平台国标身份与接入参数（单行，优先于 yaml）';
+COMMENT ON COLUMN gb_local_config.id IS '固定单行主键，恒为 1';
+COMMENT ON COLUMN gb_local_config.sip_id IS '本平台 SIP 国标 ID（20 位）';
+COMMENT ON COLUMN gb_local_config.sip_domain IS '本平台 SIP 域（ID 前 10 位）';
+COMMENT ON COLUMN gb_local_config.sip_ip IS 'SIP 监听 IP，空串=自动扫网卡，NULL=沿用 yaml';
+COMMENT ON COLUMN gb_local_config.sip_public_ip IS 'SIP 公网 IP（NAT 场景 Via/Contact 使用）';
+COMMENT ON COLUMN gb_local_config.sip_port IS 'SIP 监听端口（修改后需重启）';
+COMMENT ON COLUMN gb_local_config.password IS '设备接入 Digest 鉴权密码';
+COMMENT ON COLUMN gb_local_config.register_expires IS '设备注册有效期（秒）';
+COMMENT ON COLUMN gb_local_config.keepalive_timeout_multiplier IS '心跳超时倍数';
+COMMENT ON COLUMN gb_local_config.detect_timeout_ms IS '手动存活探测超时（毫秒）';
+COMMENT ON COLUMN gb_local_config.use_source_ip_as_remote_address IS '优先用报文源地址作为设备地址 0/1';
+COMMENT ON COLUMN gb_local_config.catalog_page_size IS 'Catalog 响应单包 Item 数（1/2/4/8）';
+COMMENT ON COLUMN gb_local_config.catalog_ack_timeout_ms IS 'Catalog 分片 ACK 超时（毫秒）';
+COMMENT ON COLUMN gb_local_config.catalog_page_interval_ms IS 'Catalog 兜底发送间隔（毫秒）';
+COMMENT ON COLUMN gb_local_config.send_rtp_port_start IS '上级点播本地发送端口段起始';
+COMMENT ON COLUMN gb_local_config.send_rtp_port_end IS '上级点播本地发送端口段结束';
+COMMENT ON COLUMN gb_local_config.create_time IS '创建时间';
+COMMENT ON COLUMN gb_local_config.update_time IS '更新时间';
+
+-- 默认平台身份（首次部署自动初始化，对应原先 application yaml 里的 gb28181 身份项）。
+-- sip_ip 留 NULL = 启动自动扫本机网卡；多网卡/需要固定监听时，登录后在「国标平台 → 本平台配置」
+-- 改成实际网卡 IP 并重启。sip_port / password 请按部署环境核对（主实例用 5061）。
+-- 幂等：已有记录时不覆盖管理面改动
+INSERT INTO gb_local_config (id, sip_id, sip_domain, sip_ip, sip_public_ip, sip_port, password)
+VALUES (1, '34020000002000000002', '3402000000', NULL, NULL, 5062, 'solo@1024')
+ON CONFLICT (id) DO NOTHING;
+
 DROP TABLE IF EXISTS gb_device;
 CREATE TABLE gb_device
 (
@@ -608,6 +661,7 @@ CREATE TABLE gb_device_channel
 (
     id            bigint NOT NULL,
     device_id     varchar(50) NOT NULL,
+    platform_id   varchar(50) NOT NULL DEFAULT '',
     channel_id    varchar(50) NOT NULL,
     report_name   varchar(255) DEFAULT NULL,
     name          varchar(255) DEFAULT NULL,
@@ -640,7 +694,8 @@ CREATE TABLE gb_device_channel
     PRIMARY KEY (id)
 );
 COMMENT ON COLUMN gb_device_channel.id IS '主键ID';
-COMMENT ON COLUMN gb_device_channel.device_id IS '所属设备国标ID';
+COMMENT ON COLUMN gb_device_channel.device_id IS '所属设备国标ID（目录上报源）';
+COMMENT ON COLUMN gb_device_channel.platform_id IS '来源接入平台国标ID（发起 Catalog 的注册方，多下级平台据此区分通道归属）';
 COMMENT ON COLUMN gb_device_channel.channel_id IS '通道/分组国标码';
 COMMENT ON COLUMN gb_device_channel.report_name IS '上报原始名称';
 COMMENT ON COLUMN gb_device_channel.name IS '自定义显示名称';
@@ -671,6 +726,7 @@ COMMENT ON COLUMN gb_device_channel.source IS '数据来源 1新增 2导入 3注
 COMMENT ON COLUMN gb_device_channel.create_time IS '创建时间';
 COMMENT ON COLUMN gb_device_channel.update_time IS '更新时间';
 CREATE UNIQUE INDEX uk_device_channel ON gb_device_channel (device_id, channel_id);
+CREATE INDEX idx_platform ON gb_device_channel (platform_id, parental);
 CREATE INDEX idx_channel_id ON gb_device_channel (channel_id);
 CREATE INDEX idx_gb_device_channel_parent_id ON gb_device_channel (parent_id);
 CREATE INDEX idx_device_tree_path ON gb_device_channel (device_id, parental, tree_path);
@@ -951,6 +1007,8 @@ CREATE TABLE gb_platform_share
     id            bigint NOT NULL,
     platform_id   bigint NOT NULL,
     group_id      bigint NOT NULL,
+    device_id     varchar(50) NOT NULL DEFAULT '',
+    channel_id    varchar(50) NOT NULL DEFAULT '',
     resource_id   bigint NOT NULL,
     exposed_code  varchar(20) DEFAULT NULL,
     create_time   timestamp(0) NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -959,8 +1017,11 @@ CREATE TABLE gb_platform_share
 COMMENT ON COLUMN gb_platform_share.id IS '主键ID';
 COMMENT ON COLUMN gb_platform_share.platform_id IS '上级平台主键';
 COMMENT ON COLUMN gb_platform_share.group_id IS '推送分组主键';
-COMMENT ON COLUMN gb_platform_share.resource_id IS '通道主键';
+COMMENT ON COLUMN gb_platform_share.device_id IS '通道所属设备国标ID（业务键）';
+COMMENT ON COLUMN gb_platform_share.channel_id IS '通道国标码（业务键，上级暴露码见 exposed_code）';
+COMMENT ON COLUMN gb_platform_share.resource_id IS '【仅回滚兼容】通道主键 gb_device_channel.id，真相以 device_id+channel_id 为准';
 COMMENT ON COLUMN gb_platform_share.exposed_code IS '对上级暴露国标码';
+CREATE UNIQUE INDEX uk_platform_channel ON gb_platform_share (platform_id, device_id, channel_id);
 CREATE UNIQUE INDEX uk_platform_resource ON gb_platform_share (platform_id, resource_id);
 CREATE UNIQUE INDEX uk_platform_exposed_code ON gb_platform_share (platform_id, exposed_code);
 CREATE INDEX idx_platform_group ON gb_platform_share (platform_id, group_id);

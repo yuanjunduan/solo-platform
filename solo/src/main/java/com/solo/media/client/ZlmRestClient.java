@@ -97,7 +97,9 @@ public class ZlmRestClient {
             data.forEach(out::add);
             return out;
         } catch (ServiceException e) {
-            log.warn("[流媒体流列表] 查询失败 节点:{} 错误:{}", server.getServerId(), e.getMessage(), e);
+            // 对账每 30s 一次：warn 只留一行，堆栈降到 debug，避免一个配错的节点刷屏
+            log.warn("[流媒体流列表] 查询失败 节点:{} 错误:{}", server.getServerId(), e.getMessage());
+            log.debug("[流媒体流列表] 查询失败详情 节点:{}", server.getServerId(), e);
             return List.of();
         }
     }

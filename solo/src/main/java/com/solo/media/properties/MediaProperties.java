@@ -59,7 +59,8 @@ public class MediaProperties {
     private boolean pushAuthEnabled = false;
 
     /**
-     * 启动时若 gb_media_server 表为空则自动写入的默认节点。
+     * 首次启动播种的默认 ZLM 节点：仅当 media_server 表里没有同 serverId 的节点时才写入。
+     * 已存在则跳过，运行期以管理面「媒体服务器」页面配置为准。
      */
     private DefaultServer defaultServer = new DefaultServer();
 
@@ -69,11 +70,12 @@ public class MediaProperties {
     private ViewRecord viewRecord = new ViewRecord();
 
     /**
-     * 默认 ZLM 节点定义；其 serverId 必须与 ZLM config.ini 中
+     * 默认 ZLM 节点定义（首次播种用）；其 serverId 必须与 ZLM config.ini 中
      * [general].mediaServerId 完全一致，否则 hook 回来时找不到节点。
      */
     @Data
     public static class DefaultServer {
+        /** 是否启用启动播种；仅在 media_server 表缺少该 serverId 时生效，不会覆盖已有节点 */
         private boolean enabled = true;
         private String serverId = "zlmediakit-local";
         private String name = "默认节点";

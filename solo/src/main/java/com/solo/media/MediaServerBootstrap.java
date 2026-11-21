@@ -38,11 +38,11 @@ public class MediaServerBootstrap {
         MediaServer exist = mediaServerMapper.selectOne(
                 new LambdaQueryWrapper<MediaServer>().eq(MediaServer::getServerId, cfg.getServerId()));
         if (exist != null) {
-            // 已存在则以配置为准整体更新，保留 id / status / hookAliveTime 等运行期状态
-            applyConfig(exist, cfg);
-            mediaServerMapper.updateById(exist);
-            log.info("[流媒体] 默认 ZLM 节点已更新 serverId={} {}:{}",
-                    cfg.getServerId(), cfg.getHostIp(), cfg.getHttpPort());
+            // 运行期唯一真实来源是 media_server 表（页面「媒体服务器」维护）。
+            // yaml 只负责首次播种：已存在的节点必须跳过，否则每次重启都会把页面上
+            // 改过的 secret / 名称 / 对外 IP 冲回配置值。
+            log.info("[流媒体] 默认 ZLM 节点已存在，跳过播种 serverId={}（以管理面配置为准）",
+                    cfg.getServerId());
             return;
         }
         MediaServer server = new MediaServer();

@@ -127,9 +127,10 @@ media:
     # 定时清扫阈值（分钟）：超过该时长仍处于观看中的记录按兜底闭合
     sweep-stale-minutes: 240
 
-  # 启动时若 gb_media_server 表为空则自动 upsert 一个默认 ZLM 节点
+  # 首次启动播种：仅当 media_server 表里没有该 serverId 的节点时写入一次；
+  # 已存在则跳过，运行期以「媒体服务器」页面配置为准（重启不会覆盖页面改动）
   default-server:
-    # 是否在启动时自动 upsert（测试环境可关掉,生产必开）
+    # 是否启用首次播种（仅在表里缺该 serverId 时生效）
     enabled: true
     # ZLM 节点唯一标识，必须与 ZLM config.ini 中 [general].mediaServerId 完全一致
     server-id: zlmediakit-local

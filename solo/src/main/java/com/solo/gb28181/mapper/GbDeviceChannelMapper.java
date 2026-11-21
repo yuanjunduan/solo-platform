@@ -66,8 +66,17 @@ public interface GbDeviceChannelMapper extends BaseMapper<GbDeviceChannel> {
                                                     @Param("keyword") String keyword,
                                                     @Param("status") String status);
 
-    @Select("SELECT parental, status, COUNT(*) AS count FROM gb_device_channel GROUP BY parental, status")
-    List<GbChannelStatusCountVO> selectStatusCount();
+    /** 状态统计；platformId 非空时只统计该下级平台上报的目录 */
+    @Select("""
+            <script>
+            SELECT parental, status, COUNT(*) AS count FROM gb_device_channel
+            <where>
+                <if test="platformId != null and platformId != ''">platform_id = #{platformId}</if>
+            </where>
+            GROUP BY parental, status
+            </script>
+            """)
+    List<GbChannelStatusCountVO> selectStatusCount(@Param("platformId") String platformId);
 
     // 合并语义对齐 MySQL：后出现的非 null 上报值覆盖先出现的，null 不覆盖
     private static List<GbDeviceChannel> mergeDuplicates(List<GbDeviceChannel> channels) {

@@ -56,6 +56,10 @@ public class GbDeviceChannelServiceImpl extends ServiceImpl<GbDeviceChannelMappe
         if (request.getDeviceId() != null && !request.getDeviceId().isBlank()) {
             wrapper.like(GbDeviceChannel::getDeviceId, request.getDeviceId());
         }
+        // 通道页以「下级平台」为第一维度：按上报目录的平台编码精确过滤
+        if (request.getPlatformId() != null && !request.getPlatformId().isBlank()) {
+            wrapper.eq(GbDeviceChannel::getPlatformId, request.getPlatformId().trim());
+        }
         if (request.getChannelId() != null && !request.getChannelId().isBlank()) {
             wrapper.like(GbDeviceChannel::getChannelId, request.getChannelId());
         }
@@ -101,8 +105,8 @@ public class GbDeviceChannelServiceImpl extends ServiceImpl<GbDeviceChannelMappe
     }
 
     @Override
-    public List<GbChannelStatusCountVO> statusCount() {
-        return getBaseMapper().selectStatusCount();
+    public List<GbChannelStatusCountVO> statusCount(String platformId) {
+        return getBaseMapper().selectStatusCount(trimToNull(platformId));
     }
 
     @Override
@@ -368,6 +372,9 @@ public class GbDeviceChannelServiceImpl extends ServiceImpl<GbDeviceChannelMappe
         channel.setParental(0);  // 手动新增一定是通道
         channel.setStatus(GbSource.CHANNEL_STATUS_UNREGISTERED);
         channel.setSource(GbSource.SYSTEM);
+        // 来源平台：手工新增设备本身不存在下级平台，与 GbDeviceServiceImpl 手工建设备路径
+        // 保持一致记为设备自身，否则 platform_id 落空串会导致按平台筛选/统计时看不见该通道
+        channel.setPlatformId(device.getDeviceId());
         // parentId = 所属设备 GB 码：与 GB/T 28181 语义一致（NVR/IPC 推 Catalog 时通道
         // <ParentID> 就是设备自己的 DeviceID），也与 CatalogSyncSupport 孤儿回落规则统一
         channel.setParentId(device.getDeviceId());

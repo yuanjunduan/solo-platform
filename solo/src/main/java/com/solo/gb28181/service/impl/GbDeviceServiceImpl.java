@@ -110,6 +110,7 @@ public class GbDeviceServiceImpl extends ServiceImpl<GbDeviceMapper, GbDevice> i
             for (GbDeviceChannel ch : channels) {
                 ch.setId(null);
                 ch.setDeviceId(device.getDeviceId());
+                ch.setPlatformId(device.getDeviceId());  // 手工新增设备不存在下级平台，来源平台记为设备自身
                 ch.setStatus(GbSource.CHANNEL_STATUS_UNREGISTERED);
                 ch.setSource(GbSource.SYSTEM);
                 ch.setParental(0);  // 手动新增一定是通道

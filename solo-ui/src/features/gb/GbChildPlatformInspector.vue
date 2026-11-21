@@ -66,12 +66,21 @@
             国标编码<span class="ml-0.5 text-destructive">*</span>
           </Label>
           <div class="flex-1">
-            <Input
-              v-model="form.platformId"
-              class="h-8 font-mono text-xs"
-              placeholder="20 位数字"
-              :disabled="!creating"
-            />
+            <div class="relative">
+              <Input
+                v-model="form.platformId"
+                class="h-8 pr-14 font-mono text-xs"
+                placeholder="20 位数字"
+                :disabled="!creating"
+              />
+              <!-- 实时长度计数：输入国标编码时不用自己数位数 -->
+              <span
+                class="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 font-mono text-[11px] tabular-nums"
+                :class="platformIdCountClass"
+              >
+                {{ form.platformId.length }}/20
+              </span>
+            </div>
             <p v-if="errors.platformId" class="mt-1 text-[11px] text-destructive">
               {{ errors.platformId }}
             </p>
@@ -234,6 +243,14 @@ const enabledModel = computed({
   set: (v: string) => {
     form.enabled = Number(v)
   },
+})
+
+/* 国标编码长度计数配色：够 20 位绿、超长红、未满灰 */
+const platformIdCountClass = computed(() => {
+  const n = form.platformId.length
+  if (n === 0) return 'text-muted-foreground/60'
+  if (n === 20) return 'text-emerald-600'
+  return n > 20 ? 'text-destructive' : 'text-muted-foreground'
 })
 
 const validate = () => {

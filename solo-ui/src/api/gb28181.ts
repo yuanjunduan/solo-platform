@@ -42,6 +42,8 @@ import type {
   GbDownloadStartRequest,
   GbDownloadResult,
   GbLocalPlatformInfo,
+  GbLocalConfig,
+  GbLocalConfigSaveRequest,
   GbParentPlatform,
   GbParentPlatformPageRequest,
   GbPlatformGroup,
@@ -143,9 +145,11 @@ export const parseSyncStatus = (
 export const getGbDeviceChannelPageApi = (data: GbDeviceChannelPageRequest) =>
   post<PageResult<GbDeviceChannel>>('/api/gb28181/device-channel/page', data)
 
-/** 通道状态统计（全局口径，按 parental 区分通道/分组） */
-export const getGbChannelStatusCountApi = () =>
-  get<GbChannelStatusCount[]>('/api/gb28181/device-channel/status-count')
+/** 通道状态统计（按 parental 区分通道/分组）；传 platformId 时只统计该下级平台上报的目录 */
+export const getGbChannelStatusCountApi = (platformId?: string) =>
+  get<GbChannelStatusCount[]>('/api/gb28181/device-channel/status-count', {
+    params: { platformId: platformId || undefined },
+  })
 
 /** 按设备查询目录树（分组为容器、通道为叶子，按 parentId 组装） */
 export const getGbDeviceChannelTreeApi = (deviceId: string) =>
@@ -431,6 +435,16 @@ export const batchDeleteGbParentPlatformApi = (ids: string[]) =>
 /** 本平台国标身份 */
 export const getGbLocalPlatformInfoApi = () =>
   get<GbLocalPlatformInfo>('/api/gb28181/parent-platform/local-info')
+
+/* ===== 级联平台：本平台国标配置（库优先于 yaml） ===== */
+
+/** 本平台国标配置（身份项可能尚未重启生效，看 restartRequired/running*） */
+export const getGbLocalConfigApi = () =>
+  get<GbLocalConfig>('/api/gb28181/local-config')
+
+/** 保存本平台国标配置，返回最新视图（含待重启标记与运行值） */
+export const saveGbLocalConfigApi = (data: GbLocalConfigSaveRequest) =>
+  put<GbLocalConfig>('/api/gb28181/local-config', data)
 
 /* ===== 级联平台：推送分组 ===== */
 

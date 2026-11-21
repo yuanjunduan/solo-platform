@@ -1,4 +1,8 @@
 # ============================================================
+#  【上级域实例 solo-platform-up】与主实例 solo-platform 同机并存，
+#  差异项：HTTP 8081 / SIP 5062 / SIP ID ...0002 / DB solo_db2 /
+#          Redis db1 / ZLM 8089(zlmediakit-local2) / RTP 发送段 60000-70000
+# ============================================================
 #  部署地址统一维护
 #  project.ip 是平台本机地址（SIP 监听用）；各组件默认跟随它，
 #  组件分散部署时只改对应那一行，下面的连接配置不用动。
@@ -13,16 +17,18 @@ project:
   redis: 192.168.118.229
   # 对象存储（S3 兼容 / MinIO）地址，S3 API 宿主端口 19100
   s3: 192.168.118.229
-  # 流媒体 ZLMediaKit 地址（host network，与 solo 同机）：启动时 MediaServerBootstrap
-  # 会以这里为准覆写 media_server 的默认节点，所以必须填 ZLM 实际监听的那台机器的 IP
+  # 流媒体 ZLMediaKit 地址（host network，与 solo 同机）：仅在首次播种默认节点时作为 seed，
+  # 之后以管理面「媒体服务器」页面配置为准（启动不会覆盖已存在的节点），必须填 ZLM 实际监听的 IP
   media: 192.168.118.7
 
 server:
-  port: 8080
+  # 主实例占 8080，本实例错开到 8081（ZLM 第二实例的 hook 回调用这个端口）
+  port: 8081
 
 spring:
   datasource:
-    url: jdbc:mysql://${project.db}:3306/solo_db?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+    # 独立库：与主实例 solo_db 隔离，避免设备/会话表互相干扰
+    url: jdbc:mysql://${project.db}:3306/solo_db2?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
     username: root
     password: 123456
     driver-class-name: com.mysql.cj.jdbc.Driver
@@ -32,6 +38,8 @@ spring:
       host: ${project.redis}
       # 宿主端口（容器内为 6379）；实例无密码，不配 password
       port: 6380
+      # 独立 db：主实例用 0，本实例用 1，避免 device:online / sync:status 等键互相覆盖
+      database: 1
 
 jwt:
   secret: c2VjcmV0LWZvci1qd3QtdG9rZW4tZ2VuZXJhdGlvbi1wbGFoZXUtdXNlLTEtbG9uZy1zZWNyZXQ=
@@ -65,24 +73,26 @@ s3:
 #  只有"代码自动算"的（线程池）才不留。
 # ============================================================
 gb28181:
-  # SIP 监听 IP；无代码默认，必填
-  ip: ${project.ip}
-  # SIP 公网 IP；NAT/公网部署时必填，用于构造 Via/Contact 头，让下级/设备能正常回包
-  public-ip:
-  # SIP 监听端口。上级（海康）按「源 IP + 源端口」匹配它那一侧的下级平台记录，
-  # 匹配不上直接丢弃、连 401 都不回。voglander 用 5061 对该上级注册成功，故本端跟随 5061；
-  # 若对端登记的是 5060 需改回（代码默认 5060）
-  port: 5061
-
-  # 本平台 SIP ID（20 位：行政区划 10 位 + 平台编号 10 位）。
-  # 海康级联的「外域编码」必须与本值完全一致，否则 REGISTER 回 400 Bad Request；
-  # 当前海康侧登记的是 34020000002000000001（与 voglander 的 local_client_id 相同）
-  id: 34020000002000000001
-  # 本平台 SIP 域（ID 前 10 位）。From/To/Contact 的域用它，需与海康侧该外域的域一致
-  domain: 3402000000
-
-  # 设备注册 Digest 鉴权密码。生产环境必须设置强密码；留空 = 开放模式，仅限隔离测试环境
-  password:
+  # 【已停用】平台身份项不再写 yaml：默认值由 sql/MySQL_solo_db.sql 向 gb_local_config 插入一行
+  # （sip_id / sip_domain / sip_ip / sip_port / password），之后统一在「国标平台 → 本平台配置」页面维护。
+  # 注意：库行缺失时这里也不再兜底，启动会以「无身份」状态运行（见启动日志 [本平台配置]）。
+  # 身份项写库后需重启生效；其余接入参数（如 register-expires）仍可在 yaml 配，页面保存则优先。
+  # # SIP 监听 IP；无代码默认，必填
+  # ip: ${project.ip}
+  # # SIP 公网 IP；NAT/公网部署时必填，用于构造 Via/Contact 头，让下级/设备能正常回包
+  # public-ip:
+  # # SIP 监听端口。主实例占 5061，本实例错开到 5062。
+  # # 海康「上级域」的「信令通信端口」必须填这个值，否则按源端口匹配不上直接丢弃
+  # port: 5062
+  #
+  # # 本平台 SIP ID（20 位：行政区划 10 位 + 平台编号 10 位）。
+  # # 本实例用 ...0002，与主实例 34020000002000000001 区分开
+  # id: 34020000002000000002
+  # # 本平台 SIP 域（ID 前 10 位）。From/To/Contact 的域用它，需与海康侧该外域的域一致
+  # domain: 3402000000
+  #
+  # # 设备注册 Digest 鉴权密码。本实例启用鉴权，与海康「上级域」的密码保持一致
+  # password: solo@1024
 
 
   # 级联下级侧：本平台作为下级向上级推送目录/通道时的分片节奏与超时
@@ -100,9 +110,9 @@ gb28181:
     # 200ms 防止对端长时间无响应时 sender 线程被占用。ACK 正常时不走这条。
     catalog-page-interval-ms: 200
 
-    # 上级点播 sendRtp 本地发送端口段（需与 media rtp 收流端口段错开、防火墙放行）
-    send-rtp-port-start: 50000
-    send-rtp-port-end: 60000
+    # 上级点播 sendRtp 本地发送端口段（与主实例 50000-60000 错开，避免端口冲突）
+    send-rtp-port-start: 60000
+    send-rtp-port-end: 70000
 
 
 
@@ -132,25 +142,33 @@ media:
     # 定时清扫阈值（分钟）：超过该时长仍处于观看中的记录按兜底闭合
     sweep-stale-minutes: 240
 
-  # 启动时若 gb_media_server 表为空则自动 upsert 一个默认 ZLM 节点
+  # 【必须显式关闭】默认节点不从 yaml 播种：ZLM 节点统一在「媒体服务器」页面登记维护。
+  # 注意：不能靠「整段注释掉」来关闭播种——MediaProperties.DefaultServer 的 Java 默认值是
+  # enabled=true / server-id=zlmediakit-local / host-ip=127.0.0.1 / http-port=8088 / secret 为空，
+  # 注释掉等于按默认值生效，每次重启都会往 media_server 插回一条空 secret 的「默认节点」。
   default-server:
-    # 是否在启动时自动 upsert（测试环境可关掉,生产必开）
-    enabled: true
-    # ZLM 节点唯一标识，必须与 ZLM config.ini 中 [general].mediaServerId 完全一致
-    server-id: zlmediakit-local
-    # 节点显示名（仅用于管理面展示）
-    name: 默认节点
-    # ZLM 管理面 IP（用于 REST API 调用）
-    host-ip: ${project.media}
-    # ZLM HTTP API 端口
-    http-port: 8088
-    # 本机调试用值：必须与 ZLMediaKit 目录下 config-solo.ini / config-solo2.ini 的 [api].secret 一致
-    # （本启动会以这里为准覆写默认节点的 secret；仓库分发模板见 zlm/config.ini，那边用 soloZlmDefaultSecret2026ABCDEFGH）
-    secret: soloZlmLocalDebugSecret2026ABCDE
-    # 对外播放使用的 IP（HTTP-FLV / WS-FLV / HLS / WebRTC）。留空则同 host-ip。
-    # 勿与 host-ip 混用：SDP c= 也从此取，需对端可达
-    stream-ip:
-    # 对外 HTTP/WS-FLV/HLS 端口；0 表示与 http-port 一致
-    stream-http-port: 0
-    # 对外 WebRTC 端口，取 ZLM [rtc].port；网页喊话推流依赖，防火墙放行 UDP
-    rtc-port: 8000
+    enabled: false
+
+  # 以下是已停用的播种参数示例，保留供参考（enabled 已在上方显式关掉）。
+  # 新库首次启动前请先在页面添加节点，否则点播/推流会提示「无可用流媒体节点，请先在管理面登记 ZLM」。
+  # default-server:
+  #   # 是否启用首次播种（仅在表里缺该 serverId 时生效）
+  #   enabled: true
+  #   # ZLM 节点唯一标识，必须与 ZLM config-solo2.ini 中 [general].mediaServerId 完全一致
+  #   server-id: zlmediakit-local2
+  #   # 节点显示名（仅用于管理面展示）
+  #   name: 上级域节点
+  #   # ZLM 管理面 IP（用于 REST API 调用）
+  #   host-ip: ${project.media}
+  #   # ZLM HTTP API 端口（第二实例；主实例是 8088）
+  #   http-port: 8089
+  #   # 本机调试用值：必须与 ZLMediaKit 目录下 config-solo.ini / config-solo2.ini 的 [api].secret 一致
+  #   # （仓库分发模板见 zlm/config.ini，那边用 soloZlmDefaultSecret2026ABCDEFGH）
+  #   secret: soloZlmLocalDebugSecret2026ABCDE
+  #   # 对外播放使用的 IP（HTTP-FLV / WS-FLV / HLS / WebRTC）。留空则同 host-ip。
+  #   # 勿与 host-ip 混用：SDP c= 也从此取，需对端可达
+  #   stream-ip:
+  #   # 对外 HTTP/WS-FLV/HLS 端口；0 表示与 http-port 一致
+  #   stream-http-port: 0
+  #   # 对外 WebRTC 端口，取 ZLM config-solo2.ini 的 [rtc].port（主实例是 8000）
+  #   rtc-port: 8001

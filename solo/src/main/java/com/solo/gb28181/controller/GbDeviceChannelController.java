@@ -53,8 +53,10 @@ public class GbDeviceChannelController {
     @Operation(summary = "按状态统计通道数")
     @GetMapping("/status-count")
     @RequirePermission({"gb28181:device-channel:list"})
-    public Result<List<GbChannelStatusCountVO>> statusCount() {
-        return Result.success(channelService.statusCount());
+    public Result<List<GbChannelStatusCountVO>> statusCount(
+            @Parameter(description = "下级平台国标编码；不传=全部平台")
+            @RequestParam(required = false) String platformId) {
+        return Result.success(channelService.statusCount(platformId));
     }
 
     @Operation(summary = "按设备国标ID列出全部通道")
