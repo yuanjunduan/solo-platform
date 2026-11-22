@@ -71,19 +71,28 @@ public class GbRecordPlanServiceImpl extends ServiceImpl<GbRecordPlanMapper, GbR
                 .map(GbRecordPlan::getChannelId)
                 .filter(Objects::nonNull)
                 .collect(Collectors.toSet());
-        Map<String, String> deviceNameMap = deviceMapper
-                .selectList(new LambdaQueryWrapper<GbDevice>().in(GbDevice::getDeviceId, deviceIds))
-                .stream()
-                .collect(Collectors.toMap(GbDevice::getDeviceId, GbDevice::getName, (a, b) -> a));
-        Map<String, String> channelNameMap = channelMapper
-                .selectList(new LambdaQueryWrapper<GbDeviceChannel>()
-                        .in(GbDeviceChannel::getDeviceId, deviceIds)
-                        .in(GbDeviceChannel::getChannelId, channelIds))
-                .stream()
-                .collect(Collectors.toMap(
-                        c -> c.getDeviceId() + "|" + c.getChannelId(),
-                        GbDeviceChannel::getName,
-                        (a, b) -> a));
+        Map<String, String> deviceNameMap = Map.of();
+        Map<String, String> channelNameMap = Map.of();
+        if (!deviceIds.isEmpty()) {
+            // 名称可能为 null（设备注册时未上报），Collectors.toMap 不允许 null value，需先过滤
+            deviceNameMap = deviceMapper
+                    .selectList(new LambdaQueryWrapper<GbDevice>().in(GbDevice::getDeviceId, deviceIds))
+                    .stream()
+                    .filter(d -> d.getName() != null)
+                    .collect(Collectors.toMap(GbDevice::getDeviceId, GbDevice::getName, (a, b) -> a));
+        }
+        if (!deviceIds.isEmpty() && !channelIds.isEmpty()) {
+            channelNameMap = channelMapper
+                    .selectList(new LambdaQueryWrapper<GbDeviceChannel>()
+                            .in(GbDeviceChannel::getDeviceId, deviceIds)
+                            .in(GbDeviceChannel::getChannelId, channelIds))
+                    .stream()
+                    .filter(c -> c.getName() != null)
+                    .collect(Collectors.toMap(
+                            c -> c.getDeviceId() + "|" + c.getChannelId(),
+                            GbDeviceChannel::getName,
+                            (a, b) -> a));
+        }
         for (GbRecordPlan plan : plans) {
             plan.setDeviceName(deviceNameMap.get(plan.getDeviceId()));
             plan.setChannelName(channelNameMap.get(plan.getDeviceId() + "|" + plan.getChannelId()));

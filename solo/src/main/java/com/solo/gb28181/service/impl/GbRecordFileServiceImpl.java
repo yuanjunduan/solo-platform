@@ -338,9 +338,11 @@ public class GbRecordFileServiceImpl implements GbRecordFileService {
                     .filter(Objects::nonNull)
                     .collect(Collectors.toSet());
             if (!deviceIds.isEmpty()) {
+                // 名称可能为 null（设备注册时未上报），Collectors.toMap 不允许 null value，需先过滤
                 deviceNameMap = deviceMapper
                         .selectList(new LambdaQueryWrapper<GbDevice>().in(GbDevice::getDeviceId, deviceIds))
                         .stream()
+                        .filter(d -> d.getName() != null)
                         .collect(Collectors.toMap(GbDevice::getDeviceId, GbDevice::getName, (a, b) -> a));
             }
             if (!deviceIds.isEmpty() && !channelIds.isEmpty()) {
@@ -349,6 +351,7 @@ public class GbRecordFileServiceImpl implements GbRecordFileService {
                                 .in(GbDeviceChannel::getDeviceId, deviceIds)
                                 .in(GbDeviceChannel::getChannelId, channelIds))
                         .stream()
+                        .filter(c -> c.getName() != null)
                         .collect(Collectors.toMap(
                                 c -> c.getDeviceId() + "|" + c.getChannelId(),
                                 GbDeviceChannel::getName, (a, b) -> a));
