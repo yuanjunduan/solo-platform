@@ -101,8 +101,8 @@ public class JwtUtils {
             if (!username.equals(claims.getSubject())) return false;
             if (claims.getExpiration().before(new Date())) return false;
             Object type = claims.get(CLAIM_TOKEN_TYPE);
-            // 兼容历史无 type claim 的旧 token：缺失视为 access
-            return type == null || TOKEN_TYPE_ACCESS.equals(type.toString());
+            // type 缺失一律视为无效：本项目的 token 必带 type，不做无 type 旧 token 的兼容
+            return type != null && TOKEN_TYPE_ACCESS.equals(type.toString());
         } catch (Exception e) {
             return false;
         }
@@ -147,13 +147,6 @@ public class JwtUtils {
         redisTemplate.opsForHash().putAll(key, data);
         redisTemplate.expire(key, Duration.ofMillis(jwtProperties.getAccessExpiration()));
         redisTemplate.opsForSet().add(ONLINE_INDEX_KEY, username);
-    }
-
-    /**
-     * 简化版：仅写 token，无元数据。保留兼容旧调用。
-     */
-    public void saveToken(String username, String token) {
-        saveSession(username, token, null);
     }
 
     public String getToken(String username) {

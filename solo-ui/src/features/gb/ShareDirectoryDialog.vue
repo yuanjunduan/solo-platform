@@ -321,8 +321,8 @@ const selectedIds = ref<Set<string>>(new Set())
 
 const displayName = (c: GbDeviceChannel) => c.name || c.reportName || c.channelId
 
-/** 通道来源接入平台（多下级平台时区分通道归属；旧数据未回填 platformId 时退回 deviceId） */
-const sourcePlatform = (c: GbDeviceChannel) => c.platformId || c.deviceId || '—'
+/** 通道来源接入平台（每行通道必有来源平台，platformId 为空只可能是数据异常，展示层给占位符） */
+const sourcePlatform = (c: GbDeviceChannel) => c.platformId || '—'
 
 const loadShared = async (reset = false) => {
   if (!selectedGroupId.value || loadingShared.value) return
