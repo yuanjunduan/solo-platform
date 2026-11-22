@@ -33,11 +33,11 @@ public class ShareChangedEventListener {
     @Async("gb28181BizExecutor")
     @EventListener
     public void onShareChanged(ShareChangedEvent event) {
-        Long platformId = event.getPlatformId();
-        if (platformId == null) {
+        Long parentPlatformId = event.getParentPlatformId();
+        if (parentPlatformId == null) {
             return;
         }
-        GbParentPlatform platform = gbParentPlatformService.getById(platformId);
+        GbParentPlatform platform = gbParentPlatformService.getById(parentPlatformId);
         if (platform == null || !Integer.valueOf(1).equals(platform.getEnabled())) {
             return;
         }
@@ -49,7 +49,7 @@ public class ShareChangedEventListener {
         if (sub.getDeviceId() != null && !sub.getDeviceId().isEmpty()) {
             return;
         }
-        List<GbDeviceChannel> items = catalogShareService.loadSharedCatalogItems(platformId);
+        List<GbDeviceChannel> items = catalogShareService.loadSharedCatalogItems(parentPlatformId);
         if (items == null) {
             items = List.of();
         }

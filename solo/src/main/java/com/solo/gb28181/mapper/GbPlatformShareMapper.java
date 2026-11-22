@@ -23,18 +23,18 @@ import java.util.List;
 @Mapper
 public interface GbPlatformShareMapper extends BaseMapper<GbPlatformShare> {
 
-    List<GbDeviceChannel> selectSharedChannels(Long platformId);
+    List<GbDeviceChannel> selectSharedChannels(Long parentPlatformId);
 
     IPage<GbDeviceChannel> selectSharedByGroupPage(Page<GbDeviceChannel> page,
-                                                   @Param("platformId") Long platformId,
+                                                   @Param("parentPlatformId") Long parentPlatformId,
                                                    @Param("groupId") Long groupId,
                                                    @Param("keyword") String keyword);
 
     IPage<GbDeviceChannel> selectUnmountedByGroupPage(Page<GbDeviceChannel> page,
-                                                      @Param("platformId") Long platformId,
+                                                      @Param("parentPlatformId") Long parentPlatformId,
                                                       @Param("groupId") Long groupId,
                                                       @Param("keyword") String keyword);
 
-    List<Long> selectUnmountedByGroupAllIds(@Param("platformId") Long platformId,
+    List<Long> selectUnmountedByGroupAllIds(@Param("parentPlatformId") Long parentPlatformId,
                                             @Param("groupId") Long groupId);
 }

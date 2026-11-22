@@ -125,11 +125,11 @@ public class CatalogShareServiceImpl implements CatalogShareService {
     }
 
     @Override
-    public GbPlatformSharedResponse getShared(Long platformId) {
+    public GbPlatformSharedResponse getShared(Long parentPlatformId) {
         // 全量（不分组）：本表只存通道，节点 id 用业务键（主键会随目录重同步变化）
         List<GbPlatformShare> shares = shareMapper.selectList(
                 new LambdaQueryWrapper<GbPlatformShare>()
-                        .eq(GbPlatformShare::getPlatformId, platformId));
+                        .eq(GbPlatformShare::getParentPlatformId, parentPlatformId));
 
         GbPlatformSharedResponse resp = new GbPlatformSharedResponse();
         List<String> nodeIds = shares.stream()
@@ -146,23 +146,23 @@ public class CatalogShareServiceImpl implements CatalogShareService {
      */
     @Deprecated
     @Override
-    public void saveShared(Long platformId, GbPlatformShareSaveRequest request) {
+    public void saveShared(Long parentPlatformId, GbPlatformShareSaveRequest request) {
         throw new com.solo.common.ServiceException(
                 "该接口已废弃：共享通道必须挂载到具体的推送分组下，请改用按分组的添加/卸载接口");
     }
 
     @Override
-    public List<GbDeviceChannel> loadSharedCatalogItems(Long platformId) {
+    public List<GbDeviceChannel> loadSharedCatalogItems(Long parentPlatformId) {
         // 推送给上级的目录结构 = 推送分组树（gb_platform_group，parental=1）+ 挂载通道（parental=0）。
         // 分组 DeviceID 用 group.code（215/216），通道 parentId 指向所在分组 code。只推送"有通道的分组
         // 及其祖先分组"——空分组（已清空挂载）不推给上级，避免上级残留空目录节点。
         List<GbPlatformShare> shares = shareMapper.selectList(
                 new LambdaQueryWrapper<GbPlatformShare>()
-                        .eq(GbPlatformShare::getPlatformId, platformId));
+                        .eq(GbPlatformShare::getParentPlatformId, parentPlatformId));
 
         List<GbPlatformGroup> groups = groupMapper.selectList(
                 new LambdaQueryWrapper<GbPlatformGroup>()
-                        .eq(GbPlatformGroup::getPlatformId, platformId)
+                        .eq(GbPlatformGroup::getParentPlatformId, parentPlatformId)
                         .orderByAsc(GbPlatformGroup::getId));
         Map<Long, GbPlatformGroup> groupById = groups.stream()
                 .collect(Collectors.toMap(GbPlatformGroup::getId, g -> g, (a, b) -> a));
@@ -264,8 +264,8 @@ public class CatalogShareServiceImpl implements CatalogShareService {
     }
 
     @Override
-    public List<GbDeviceChannel> loadSharedChannels(Long platformId) {
-        return shareMapper.selectSharedChannels(platformId);
+    public List<GbDeviceChannel> loadSharedChannels(Long parentPlatformId) {
+        return shareMapper.selectSharedChannels(parentPlatformId);
     }
 
     /**
@@ -322,39 +322,39 @@ public class CatalogShareServiceImpl implements CatalogShareService {
     }
 
     @Override
-    public void pushCatalog(Long platformId) {
-        GbParentPlatform platform = gbParentPlatformService.getById(platformId);
+    public void pushCatalog(Long parentPlatformId) {
+        GbParentPlatform platform = gbParentPlatformService.getById(parentPlatformId);
         if (platform == null || !Integer.valueOf(1).equals(platform.getEnabled())) {
             throw new ServiceException("上级平台不存在或已禁用");
         }
-        List<GbDeviceChannel> items = loadSharedCatalogItems(platformId);
+        List<GbDeviceChannel> items = loadSharedCatalogItems(parentPlatformId);
         platformCommander.sendNotifyCatalogList(platform, properties.getId(), items,
                 String.valueOf(PlatformCommander.nextSn()));
-        log.info("[{}] 主动推送 platformId={} 目录条目={} 结构:{}",
-                LOG_TAG, platformId, items.size(), PlatformCatalogXml.describe(items));
+        log.info("[{}] 主动推送 parentPlatformId={} 目录条目={} 结构:{}",
+                LOG_TAG, parentPlatformId, items.size(), PlatformCatalogXml.describe(items));
     }
 
     // ==================== 按组增删（推送目录弹窗用） ====================
 
     @Override
-    public IPage<GbDeviceChannel> pageSharedByGroup(Long platformId, Long groupId, Page<GbDeviceChannel> page, String keyword) {
-        requireOwnedGroup(platformId, groupId);
-        return shareMapper.selectSharedByGroupPage(page, platformId, groupId, normalize(keyword));
+    public IPage<GbDeviceChannel> pageSharedByGroup(Long parentPlatformId, Long groupId, Page<GbDeviceChannel> page, String keyword) {
+        requireOwnedGroup(parentPlatformId, groupId);
+        return shareMapper.selectSharedByGroupPage(page, parentPlatformId, groupId, normalize(keyword));
     }
 
     @Override
-    public IPage<GbDeviceChannel> pageUnmountedByGroup(Long platformId, Long groupId, Page<GbDeviceChannel> page, String keyword) {
-        requireOwnedGroup(platformId, groupId);
-        return shareMapper.selectUnmountedByGroupPage(page, platformId, groupId, normalize(keyword));
+    public IPage<GbDeviceChannel> pageUnmountedByGroup(Long parentPlatformId, Long groupId, Page<GbDeviceChannel> page, String keyword) {
+        requireOwnedGroup(parentPlatformId, groupId);
+        return shareMapper.selectUnmountedByGroupPage(page, parentPlatformId, groupId, normalize(keyword));
     }
 
     @Override
     @Transactional
-    public int addShares(Long platformId, Long groupId, List<Long> resourceIds) {
+    public int addShares(Long parentPlatformId, Long groupId, List<Long> resourceIds) {
         if (resourceIds == null || resourceIds.isEmpty()) {
             return 0;
         }
-        GbPlatformGroup group = requireOwnedGroup(platformId, groupId);
+        GbPlatformGroup group = requireOwnedGroup(parentPlatformId, groupId);
 
         // 1) 拉本次要挂载的通道实体（入参仍是主键：UI 列表刚查出来的，主键一定有效）
         List<GbDeviceChannel> resources = channelMapper.selectBatchIds(resourceIds);
@@ -368,7 +368,7 @@ public class CatalogShareServiceImpl implements CatalogShareService {
         //    通道重新同步换过主键也能认出"已挂载"）
         List<GbPlatformShare> existing = shareMapper.selectList(
                 new LambdaQueryWrapper<GbPlatformShare>()
-                        .eq(GbPlatformShare::getPlatformId, platformId));
+                        .eq(GbPlatformShare::getParentPlatformId, parentPlatformId));
         Map<GbPlatformShare, GbDeviceChannel> existingChannels = resolveChannels(existing);
 
         // 记录"已挂本组"与"已挂其他组"——后者要让用户知道在哪组，不能静默跳过
@@ -465,7 +465,7 @@ public class CatalogShareServiceImpl implements CatalogShareService {
                     exposed = gbCodeGenerator.nextExposedChannelCode(res.getDeviceId(), res.getChannelId());
                 }
             }
-            toInsert.add(newShare(platformId, groupId, res, exposed));
+            toInsert.add(newShare(parentPlatformId, groupId, res, exposed));
         }
         if (!toInsert.isEmpty()) {
             Db.saveBatch(toInsert);
@@ -488,26 +488,26 @@ public class CatalogShareServiceImpl implements CatalogShareService {
             // 厂商/型号/归属/IP 通常只在设备表维护，回填后才能与全量推送的 Item 一致
             fillChannelMetaBatch(addItems);
             int groupCount = addItems.size() - toInsert.size();
-            sendAddEvents(platformId, addItems, "分组:" + group.getCode() + (groupCount > 0 ? "(含父链 " + groupCount + " 个分组)" : ""));
-            eventPublisher.publishEvent(new ShareChangedEvent(this, platformId));
+            sendAddEvents(parentPlatformId, addItems, "分组:" + group.getCode() + (groupCount > 0 ? "(含父链 " + groupCount + " 个分组)" : ""));
+            eventPublisher.publishEvent(new ShareChangedEvent(this, parentPlatformId));
         }
-        log.info("[{}] 批量挂载 platformId={} groupId={} groupName={} 输入={} 新增={} 撞码={}（复用旧码={}） 已挂本组跳过={}",
-                LOG_TAG, platformId, groupId, group.getName(), resources.size(), toInsert.size(),
+        log.info("[{}] 批量挂载 parentPlatformId={} groupId={} groupName={} 输入={} 新增={} 撞码={}（复用旧码={}） 已挂本组跳过={}",
+                LOG_TAG, parentPlatformId, groupId, group.getName(), resources.size(), toInsert.size(),
                 needExposedKeys.size(), exposedByKey.size(), alreadySharedInGroup.size());
         return toInsert.size();
     }
 
     @Override
     @Transactional
-    public boolean removeShare(Long platformId, Long groupId, Long resourceId) {
-        requireOwnedGroup(platformId, groupId);
+    public boolean removeShare(Long parentPlatformId, Long groupId, Long resourceId) {
+        requireOwnedGroup(parentPlatformId, groupId);
         // 入参是通道主键（UI 当前列表里的），先解析出业务键；解析不到再退回按主键删（旧数据）
         GbDeviceChannel channel = resourceId == null ? null : channelMapper.selectById(resourceId);
         // 先取待撤销节点再执行删除：删完 share 行就构造不出 DEL 报文了
-        List<GbDeviceChannel> revoke = loadRevokeItems(platformId, groupId,
+        List<GbDeviceChannel> revoke = loadRevokeItems(parentPlatformId, groupId,
                 channel == null ? null : List.of(channel));
         LambdaQueryWrapper<GbPlatformShare> w = new LambdaQueryWrapper<GbPlatformShare>()
-                .eq(GbPlatformShare::getPlatformId, platformId)
+                .eq(GbPlatformShare::getParentPlatformId, parentPlatformId)
                 .eq(GbPlatformShare::getGroupId, groupId);
         if (channel != null) {
             w.eq(GbPlatformShare::getDeviceId, channel.getDeviceId())
@@ -517,60 +517,60 @@ public class CatalogShareServiceImpl implements CatalogShareService {
         }
         int n = shareMapper.delete(w);
         if (n > 0) {
-            log.info("[{}] 卸载 platformId={} groupId={} resourceId={} deviceId={} channelId={}",
-                    LOG_TAG, platformId, groupId, resourceId,
+            log.info("[{}] 卸载 parentPlatformId={} groupId={} resourceId={} deviceId={} channelId={}",
+                    LOG_TAG, parentPlatformId, groupId, resourceId,
                     channel == null ? null : channel.getDeviceId(),
                     channel == null ? null : channel.getChannelId());
             // 上级只对显式 DEL 做删除，仅重推全量快照会让节点永远留在上级目录里
-            sendRevokeEvents(platformId, revoke);
-            eventPublisher.publishEvent(new ShareChangedEvent(this, platformId));
+            sendRevokeEvents(parentPlatformId, revoke);
+            eventPublisher.publishEvent(new ShareChangedEvent(this, parentPlatformId));
         }
         return n > 0;
     }
 
     @Override
     @Transactional
-    public int clearShares(Long platformId, Long groupId) {
-        GbPlatformGroup group = requireOwnedGroup(platformId, groupId);
-        List<GbDeviceChannel> revoke = loadRevokeItems(platformId, groupId, null);
+    public int clearShares(Long parentPlatformId, Long groupId) {
+        GbPlatformGroup group = requireOwnedGroup(parentPlatformId, groupId);
+        List<GbDeviceChannel> revoke = loadRevokeItems(parentPlatformId, groupId, null);
         int n = shareMapper.delete(new LambdaQueryWrapper<GbPlatformShare>()
-                .eq(GbPlatformShare::getPlatformId, platformId)
+                .eq(GbPlatformShare::getParentPlatformId, parentPlatformId)
                 .eq(GbPlatformShare::getGroupId, groupId));
         if (n > 0) {
-            sendRevokeEvents(platformId, revoke);
-            eventPublisher.publishEvent(new ShareChangedEvent(this, platformId));
+            sendRevokeEvents(parentPlatformId, revoke);
+            eventPublisher.publishEvent(new ShareChangedEvent(this, parentPlatformId));
         }
-        log.info("[{}] 清除组内挂载 platformId={} groupId={} groupName={} 删除条数={}",
-                LOG_TAG, platformId, groupId, group.getName(), n);
+        log.info("[{}] 清除组内挂载 parentPlatformId={} groupId={} groupName={} 删除条数={}",
+                LOG_TAG, parentPlatformId, groupId, group.getName(), n);
         return n;
     }
 
     @Override
     @Transactional
-    public int clearAllSharesByPlatform(Long platformId) {
-        List<GbDeviceChannel> revoke = loadRevokeItems(platformId, null, null);
+    public int clearAllSharesByPlatform(Long parentPlatformId) {
+        List<GbDeviceChannel> revoke = loadRevokeItems(parentPlatformId, null, null);
         int n = shareMapper.delete(new LambdaQueryWrapper<GbPlatformShare>()
-                .eq(GbPlatformShare::getPlatformId, platformId));
+                .eq(GbPlatformShare::getParentPlatformId, parentPlatformId));
         if (n > 0) {
-            sendRevokeEvents(platformId, revoke);
-            eventPublisher.publishEvent(new ShareChangedEvent(this, platformId));
+            sendRevokeEvents(parentPlatformId, revoke);
+            eventPublisher.publishEvent(new ShareChangedEvent(this, parentPlatformId));
         }
-        log.info("[{}] 清除该平台全部分组挂载 platformId={} 删除条数={}", LOG_TAG, platformId, n);
+        log.info("[{}] 清除该平台全部分组挂载 parentPlatformId={} 删除条数={}", LOG_TAG, parentPlatformId, n);
         return n;
     }
 
     @Override
     @Transactional
-    public int addAllUnmounted(Long platformId, Long groupId) {
+    public int addAllUnmounted(Long parentPlatformId, Long groupId) {
         // 列出"未挂载"（不在该平台任何 share 里）的所有通道 id——同组/其他组已挂的不算
-        List<Long> allUnmounted = shareMapper.selectUnmountedByGroupAllIds(platformId, groupId);
+        List<Long> allUnmounted = shareMapper.selectUnmountedByGroupAllIds(parentPlatformId, groupId);
         if (allUnmounted.isEmpty()) {
-            log.info("[{}] 一键添加：无未挂载通道 platformId={} groupId={}", LOG_TAG, platformId, groupId);
+            log.info("[{}] 一键添加：无未挂载通道 parentPlatformId={} groupId={}", LOG_TAG, parentPlatformId, groupId);
             return 0;
         }
-        int n = addShares(platformId, groupId, allUnmounted);
-        log.info("[{}] 一键添加完成 platformId={} groupId={} 候选={} 新增={}",
-                LOG_TAG, platformId, groupId, allUnmounted.size(), n);
+        int n = addShares(parentPlatformId, groupId, allUnmounted);
+        log.info("[{}] 一键添加完成 parentPlatformId={} groupId={} 候选={} 新增={}",
+                LOG_TAG, parentPlatformId, groupId, allUnmounted.size(), n);
         return n;
     }
 
@@ -583,9 +583,9 @@ public class CatalogShareServiceImpl implements CatalogShareService {
      * 否则通道会变成指向已删除父节点的孤儿，部分上级会直接忽略。</p>
      */
     @Override
-    public List<GbDeviceChannel> loadGroupRevokeItems(Long platformId, Long groupId) {
-        GbPlatformGroup group = requireOwnedGroup(platformId, groupId);
-        List<GbDeviceChannel> items = new ArrayList<>(loadRevokeItems(platformId, groupId, null));
+    public List<GbDeviceChannel> loadGroupRevokeItems(Long parentPlatformId, Long groupId) {
+        GbPlatformGroup group = requireOwnedGroup(parentPlatformId, groupId);
+        List<GbDeviceChannel> items = new ArrayList<>(loadRevokeItems(parentPlatformId, groupId, null));
         items.add(toGroupItem(group));
         return items;
     }
@@ -687,17 +687,17 @@ public class CatalogShareServiceImpl implements CatalogShareService {
      * @param groupId     限某分组；null = 不限
      * @param channels    限某几条通道（按业务键匹配）；null/空 = 不限
      */
-    private List<GbDeviceChannel> loadRevokeItems(Long platformId, Long groupId, List<GbDeviceChannel> channels) {
-        return doLoadChannelItems(platformId, groupId == null ? null : List.of(groupId), channels);
+    private List<GbDeviceChannel> loadRevokeItems(Long parentPlatformId, Long groupId, List<GbDeviceChannel> channels) {
+        return doLoadChannelItems(parentPlatformId, groupId == null ? null : List.of(groupId), channels);
     }
 
     /**
      * 按分组集合取挂载通道节点；{@code groupIdSet} 为 null/空 时不限分组（清空平台用）。
      * 分组改码时需要一次性拿整棵子树下的通道。
      */
-    private List<GbDeviceChannel> doLoadChannelItems(Long platformId, List<Long> groupIdSet, List<GbDeviceChannel> channels) {
+    private List<GbDeviceChannel> doLoadChannelItems(Long parentPlatformId, List<Long> groupIdSet, List<GbDeviceChannel> channels) {
         LambdaQueryWrapper<GbPlatformShare> w = new LambdaQueryWrapper<GbPlatformShare>()
-                .eq(GbPlatformShare::getPlatformId, platformId);
+                .eq(GbPlatformShare::getParentPlatformId, parentPlatformId);
         if (groupIdSet != null && !groupIdSet.isEmpty()) {
             w.in(GbPlatformShare::getGroupId, groupIdSet);
         }
@@ -732,23 +732,23 @@ public class CatalogShareServiceImpl implements CatalogShareService {
 
     /** 按入参顺序下发撤销事件（{@code Event=DEL}）；平台不存在或未启用时只告警不发送 */
     @Override
-    public void sendRevokeEvents(Long platformId, List<GbDeviceChannel> items) {
+    public void sendRevokeEvents(Long parentPlatformId, List<GbDeviceChannel> items) {
         if (items == null || items.isEmpty()) {
             return;
         }
-        GbParentPlatform platform = gbParentPlatformService.getById(platformId);
+        GbParentPlatform platform = gbParentPlatformService.getById(parentPlatformId);
         if (platform == null || !Integer.valueOf(1).equals(platform.getEnabled())) {
-            log.warn("[{}] 撤销事件未发送：上级平台不存在或未启用 platformId={} 节点:{}",
-                    LOG_TAG, platformId, items.size());
+            log.warn("[{}] 撤销事件未发送：上级平台不存在或未启用 parentPlatformId={} 节点:{}",
+                    LOG_TAG, parentPlatformId, items.size());
             return;
         }
         // 整批串行发送：删除必须严格「叶子 → 根」，逐条丢线程池会打乱顺序
         platformCommander.sendCatalogEventNotifyBatch(platform, properties.getId(), items, "DEL");
-        log.info("[{}] 撤销事件下发 platformId={} 节点:{}", LOG_TAG, platformId, items.size());
+        log.info("[{}] 撤销事件下发 parentPlatformId={} 节点:{}", LOG_TAG, parentPlatformId, items.size());
     }
 
     @Override
-    public void notifyGroupUpdated(Long platformId, GbPlatformGroup before, GbPlatformGroup after) {
+    public void notifyGroupUpdated(Long parentPlatformId, GbPlatformGroup before, GbPlatformGroup after) {
         if (before == null || after == null) {
             return;
         }
@@ -758,10 +758,10 @@ public class CatalogShareServiceImpl implements CatalogShareService {
         if (!nameChanged && !codeChanged && !parentChanged) {
             return;
         }
-        GbParentPlatform platform = gbParentPlatformService.getById(platformId);
+        GbParentPlatform platform = gbParentPlatformService.getById(parentPlatformId);
         if (platform == null || !Integer.valueOf(1).equals(platform.getEnabled())) {
-            log.warn("[{}] 分组变更未推送：上级平台不存在或未启用 platformId={} 分组:{}",
-                    LOG_TAG, platformId, after.getCode());
+            log.warn("[{}] 分组变更未推送：上级平台不存在或未启用 parentPlatformId={} 分组:{}",
+                    LOG_TAG, parentPlatformId, after.getCode());
             return;
         }
 
@@ -769,8 +769,8 @@ public class CatalogShareServiceImpl implements CatalogShareService {
         if (!codeChanged && !parentChanged) {
             platformCommander.sendCatalogEventSequence(platform, properties.getId(),
                     List.of(new PlatformCommander.CatalogEvent(toGroupItem(after), "UPDATE")));
-            log.info("[{}] 分组改名 UPDATE platformId={} 编码:{} 新名称:{}",
-                    LOG_TAG, platformId, after.getCode(), after.getName());
+            log.info("[{}] 分组改名 UPDATE parentPlatformId={} 编码:{} 新名称:{}",
+                    LOG_TAG, parentPlatformId, after.getCode(), after.getName());
             return;
         }
 
@@ -779,7 +779,7 @@ public class CatalogShareServiceImpl implements CatalogShareService {
         String oldCode = before.getCode();
         String newCode = after.getCode();
         List<GbPlatformGroup> descendants = codeChanged
-                ? loadDescendants(platformId, after.getId()) : List.of();
+                ? loadDescendants(parentPlatformId, after.getId()) : List.of();
         List<Long> subtreeGroupIds = new ArrayList<>(descendants.size() + 1);
         subtreeGroupIds.add(after.getId());
         for (GbPlatformGroup d : descendants) {
@@ -791,7 +791,7 @@ public class CatalogShareServiceImpl implements CatalogShareService {
             // 叶子 → 根：先通道（直挂本组的那批 ParentID 要用旧 code），再由深到浅撤子分组。
             // 必须用副本：本方法后面还要再查一次同一批通道做 ADD，MyBatis 一级缓存在同一事务内
             // 返回的是同一批对象引用，会把这里改过的 ParentID 覆盖回新 code，DEL 报文就带错父码。
-            for (GbDeviceChannel c : doLoadChannelItems(platformId, subtreeGroupIds, null)) {
+            for (GbDeviceChannel c : doLoadChannelItems(parentPlatformId, subtreeGroupIds, null)) {
                 GbDeviceChannel del = copyChannel(c);
                 if (newCode != null && newCode.equals(del.getParentId())) {
                     del.setParentId(oldCode);
@@ -819,7 +819,7 @@ public class CatalogShareServiceImpl implements CatalogShareService {
             for (GbPlatformGroup d : descendants) {
                 seq.add(new PlatformCommander.CatalogEvent(toGroupItem(d), "ADD"));
             }
-            List<GbDeviceChannel> addChannels = doLoadChannelItems(platformId, subtreeGroupIds, null);
+            List<GbDeviceChannel> addChannels = doLoadChannelItems(parentPlatformId, subtreeGroupIds, null);
             fillChannelMetaBatch(addChannels);
             for (GbDeviceChannel c : addChannels) {
                 seq.add(new PlatformCommander.CatalogEvent(c, "ADD"));
@@ -827,8 +827,8 @@ public class CatalogShareServiceImpl implements CatalogShareService {
         }
 
         platformCommander.sendCatalogEventSequence(platform, properties.getId(), seq);
-        log.info("[{}] 分组变更推送 platformId={} {} → {} 换父:{} 改码:{} 事件数:{}",
-                LOG_TAG, platformId, oldCode, newCode, parentChanged, codeChanged, seq.size());
+        log.info("[{}] 分组变更推送 parentPlatformId={} {} → {} 换父:{} 改码:{} 事件数:{}",
+                LOG_TAG, parentPlatformId, oldCode, newCode, parentChanged, codeChanged, seq.size());
     }
 
     /** 浅拷贝通道节点：事件序列里同一通道可能先 DEL 再 ADD，两份不能共用同一对象 */
@@ -839,9 +839,9 @@ public class CatalogShareServiceImpl implements CatalogShareService {
     }
 
     /** 取某分组的全部后代（BFS，浅 → 深），用于改码时撤销/重发整棵子树 */
-    private List<GbPlatformGroup> loadDescendants(Long platformId, Long rootId) {
+    private List<GbPlatformGroup> loadDescendants(Long parentPlatformId, Long rootId) {
         List<GbPlatformGroup> all = groupMapper.selectList(new LambdaQueryWrapper<GbPlatformGroup>()
-                .eq(GbPlatformGroup::getPlatformId, platformId));
+                .eq(GbPlatformGroup::getParentPlatformId, parentPlatformId));
         Map<Long, List<GbPlatformGroup>> childrenByParent = new HashMap<>();
         for (GbPlatformGroup g : all) {
             Long pid = g.getParentId();
@@ -864,18 +864,18 @@ public class CatalogShareServiceImpl implements CatalogShareService {
     }
 
     /** 下发新增事件（{@code Event=ADD}）：入参顺序即发送顺序，分组链必须排在通道之前 */
-    private void sendAddEvents(Long platformId, List<GbDeviceChannel> items, String scene) {
+    private void sendAddEvents(Long parentPlatformId, List<GbDeviceChannel> items, String scene) {
         if (items == null || items.isEmpty()) {
             return;
         }
-        GbParentPlatform platform = gbParentPlatformService.getById(platformId);
+        GbParentPlatform platform = gbParentPlatformService.getById(parentPlatformId);
         if (platform == null || !Integer.valueOf(1).equals(platform.getEnabled())) {
-            log.warn("[{}] 新增事件未发送：上级平台不存在或未启用 platformId={} 节点:{}",
-                    LOG_TAG, platformId, items.size());
+            log.warn("[{}] 新增事件未发送：上级平台不存在或未启用 parentPlatformId={} 节点:{}",
+                    LOG_TAG, parentPlatformId, items.size());
             return;
         }
         platformCommander.sendCatalogEventNotifyBatch(platform, properties.getId(), items, "ADD");
-        log.info("[{}] 新增事件下发 platformId={} {} 节点:{}", LOG_TAG, platformId, scene, items.size());
+        log.info("[{}] 新增事件下发 parentPlatformId={} {} 节点:{}", LOG_TAG, parentPlatformId, scene, items.size());
     }
 
     private static String normalize(String keyword) {
@@ -937,22 +937,22 @@ public class CatalogShareServiceImpl implements CatalogShareService {
     }
 
     /**
-     * 校验分组存在且属于该 platformId。抛 ServiceException 让全局异常处理统一翻译。
+     * 校验分组存在且属于该 parentPlatformId。抛 ServiceException 让全局异常处理统一翻译。
      */
-    private GbPlatformGroup requireOwnedGroup(Long platformId, Long groupId) {
+    private GbPlatformGroup requireOwnedGroup(Long parentPlatformId, Long groupId) {
         GbPlatformGroup g = groupMapper.selectById(groupId);
         if (g == null) {
             throw new com.solo.common.ServiceException("分组不存在");
         }
-        if (!platformId.equals(g.getPlatformId())) {
+        if (!parentPlatformId.equals(g.getParentPlatformId())) {
             throw new com.solo.common.ServiceException("分组不属于该上级平台");
         }
         return g;
     }
 
-    private static GbPlatformShare newShare(Long platformId, Long groupId, GbDeviceChannel channel, String exposedCode) {
+    private static GbPlatformShare newShare(Long parentPlatformId, Long groupId, GbDeviceChannel channel, String exposedCode) {
         GbPlatformShare row = new GbPlatformShare();
-        row.setPlatformId(platformId);
+        row.setParentPlatformId(parentPlatformId);
         row.setGroupId(groupId);
         row.setDeviceId(channel.getDeviceId());
         row.setChannelId(channel.getChannelId());

@@ -13,13 +13,13 @@ import java.util.List;
  */
 public interface PlatformGroupService {
 
-    List<GbPlatformGroupResponse> listGroupTree(Long platformId);
+    List<GbPlatformGroupResponse> listGroupTree(Long parentPlatformId);
 
-    void createGroup(Long platformId, GbPlatformGroupSaveRequest req);
+    void createGroup(Long parentPlatformId, GbPlatformGroupSaveRequest req);
 
-    void updateGroup(Long platformId, Long groupId, GbPlatformGroupSaveRequest req);
+    void updateGroup(Long parentPlatformId, Long groupId, GbPlatformGroupSaveRequest req);
 
-    void deleteGroup(Long platformId, Long groupId);
+    void deleteGroup(Long parentPlatformId, Long groupId);
 
-    GbPlatformGroup requireOwnedGroup(Long platformId, Long groupId);
+    GbPlatformGroup requireOwnedGroup(Long parentPlatformId, Long groupId);
 }

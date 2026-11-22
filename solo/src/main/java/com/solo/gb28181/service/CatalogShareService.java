@@ -28,28 +28,28 @@ public interface CatalogShareService {
 
     List<GbShareTreeNodeResponse> shareTree();
 
-    GbPlatformSharedResponse getShared(Long platformId);
+    GbPlatformSharedResponse getShared(Long parentPlatformId);
 
     @Deprecated
-    void saveShared(Long platformId, GbPlatformShareSaveRequest request);
+    void saveShared(Long parentPlatformId, GbPlatformShareSaveRequest request);
 
-    List<GbDeviceChannel> loadSharedCatalogItems(Long platformId);
+    List<GbDeviceChannel> loadSharedCatalogItems(Long parentPlatformId);
 
-    List<GbDeviceChannel> loadSharedChannels(Long platformId);
+    List<GbDeviceChannel> loadSharedChannels(Long parentPlatformId);
 
-    IPage<GbDeviceChannel> pageSharedByGroup(Long platformId, Long groupId, Page<GbDeviceChannel> page, String keyword);
+    IPage<GbDeviceChannel> pageSharedByGroup(Long parentPlatformId, Long groupId, Page<GbDeviceChannel> page, String keyword);
 
-    IPage<GbDeviceChannel> pageUnmountedByGroup(Long platformId, Long groupId, Page<GbDeviceChannel> page, String keyword);
+    IPage<GbDeviceChannel> pageUnmountedByGroup(Long parentPlatformId, Long groupId, Page<GbDeviceChannel> page, String keyword);
 
-    int addShares(Long platformId, Long groupId, List<Long> resourceIds);
+    int addShares(Long parentPlatformId, Long groupId, List<Long> resourceIds);
 
-    boolean removeShare(Long platformId, Long groupId, Long resourceId);
+    boolean removeShare(Long parentPlatformId, Long groupId, Long resourceId);
 
-    int clearShares(Long platformId, Long groupId);
+    int clearShares(Long parentPlatformId, Long groupId);
 
-    int addAllUnmounted(Long platformId, Long groupId);
+    int addAllUnmounted(Long parentPlatformId, Long groupId);
 
-    int clearAllSharesByPlatform(Long platformId);
+    int clearAllSharesByPlatform(Long parentPlatformId);
 
     /**
      * 构造「删分组」要撤销的节点序列：组内挂载通道（在前）+ 分组自身（最后）。
@@ -58,12 +58,12 @@ public interface CatalogShareService {
      * 返回顺序即发送顺序，保证「叶子 → 根」：先删父会让子节点变孤儿，
      * 部分上级会直接忽略后续对孤儿节点的删除。</p>
      */
-    List<GbDeviceChannel> loadGroupRevokeItems(Long platformId, Long groupId);
+    List<GbDeviceChannel> loadGroupRevokeItems(Long parentPlatformId, Long groupId);
 
     /**
      * 按入参顺序逐条下发撤销事件（{@code Event=DEL}）；平台不存在或未启用时只告警不发送。
      */
-    void sendRevokeEvents(Long platformId, List<GbDeviceChannel> items);
+    void sendRevokeEvents(Long parentPlatformId, List<GbDeviceChannel> items);
 
     /**
      * 分组变更事件：
@@ -76,7 +76,7 @@ public interface CatalogShareService {
      * @param before 变更前的快照（code / name / parentId 必须是旧值）
      * @param after  变更后的实体
      */
-    void notifyGroupUpdated(Long platformId, GbPlatformGroup before, GbPlatformGroup after);
+    void notifyGroupUpdated(Long parentPlatformId, GbPlatformGroup before, GbPlatformGroup after);
 
-    void pushCatalog(Long platformId);
+    void pushCatalog(Long parentPlatformId);
 }

@@ -10,10 +10,10 @@ import org.springframework.context.ApplicationEvent;
 public class ShareChangedEvent extends ApplicationEvent {
 
     /** 上级平台主键（gb_parent_platform.id） */
-    private final Long platformId;
+    private final Long parentPlatformId;
 
-    public ShareChangedEvent(Object source, Long platformId) {
+    public ShareChangedEvent(Object source, Long parentPlatformId) {
         super(source);
-        this.platformId = platformId;
+        this.parentPlatformId = parentPlatformId;
     }
 }

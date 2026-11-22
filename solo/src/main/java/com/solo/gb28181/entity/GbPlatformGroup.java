@@ -29,9 +29,9 @@ public class GbPlatformGroup {
     @Schema(description = "分组国标编码（GB/T 28181-2016 附录 D 20 位数字：前 10 位为本平台 domain，第 11-13 位为业务分类 215=业务分组 / 216=虚拟组织，后 7 位为序号；平台内唯一 uk_platform_code）")
     private String code;
 
-    @Schema(description = "所属上级平台主键（逻辑关联 gb_parent_platform.id）")
+    @Schema(description = "所属上级平台主键（列 parent_platform_id，逻辑关联 gb_parent_platform.id）")
     @JsonSerialize(using = ToStringSerializer.class)
-    private Long platformId;
+    private Long parentPlatformId;
 
     @Schema(description = "父分组主键（引用同表 id；根节点 = 0）")
     @JsonSerialize(using = ToStringSerializer.class)

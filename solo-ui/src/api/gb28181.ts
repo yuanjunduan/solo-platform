@@ -449,91 +449,91 @@ export const saveGbLocalConfigApi = (data: GbLocalConfigSaveRequest) =>
 /* ===== 级联平台：推送分组 ===== */
 
 /** 推送目录分组树 */
-export const getParentPlatformShareGroupTreeApi = (id: string) =>
-  get<GbPlatformGroup[]>(`/api/gb28181/parent-platform/${id}/share-group-tree`)
+export const getParentPlatformShareGroupTreeApi = (parentPlatformId: string) =>
+  get<GbPlatformGroup[]>(`/api/gb28181/parent-platform/${parentPlatformId}/share-group-tree`)
 
 /** 新增推送分组 */
-export const savePlatformGroupApi = (platformId: string, data: GbPlatformGroupSaveRequest) =>
-  post<void>(`/api/gb28181/parent-platform/${platformId}/share-group`, data)
+export const savePlatformGroupApi = (parentPlatformId: string, data: GbPlatformGroupSaveRequest) =>
+  post<void>(`/api/gb28181/parent-platform/${parentPlatformId}/share-group`, data)
 
 /** 修改推送分组 */
 export const updatePlatformGroupApi = (
-  platformId: string,
+  parentPlatformId: string,
   groupId: string,
   data: GbPlatformGroupSaveRequest,
 ) =>
   put<void>(
-    `/api/gb28181/parent-platform/${platformId}/share-group/${groupId}`,
+    `/api/gb28181/parent-platform/${parentPlatformId}/share-group/${groupId}`,
     data,
   )
 
 /** 删除推送分组 */
-export const deletePlatformGroupApi = (platformId: string, groupId: string) =>
-  del<void>(`/api/gb28181/parent-platform/${platformId}/share-group/${groupId}`)
+export const deletePlatformGroupApi = (parentPlatformId: string, groupId: string) =>
+  del<void>(`/api/gb28181/parent-platform/${parentPlatformId}/share-group/${groupId}`)
 
 /* ===== 级联平台：通道共享 ===== */
 
 /** 分组下未挂载通道分页（添加 picker） */
 export const getParentPlatformUnmountedChannelsApi = (
-  platformId: string,
+  parentPlatformId: string,
   groupId: string,
   data: GbShareChannelPageRequest,
 ) =>
   post<PageResult<GbDeviceChannel>>(
-    `/api/gb28181/parent-platform/${platformId}/share-group/${groupId}/unmounted-channels/page`,
+    `/api/gb28181/parent-platform/${parentPlatformId}/share-group/${groupId}/unmounted-channels/page`,
     data,
   )
 
 /** 分组下已挂载通道分页 */
 export const getParentPlatformSharedByGroupPageApi = (
-  platformId: string,
+  parentPlatformId: string,
   groupId: string,
   data: GbShareChannelPageRequest,
 ) =>
   post<PageResult<GbSharedChannel>>(
-    `/api/gb28181/parent-platform/${platformId}/share-group/${groupId}/shared/page`,
+    `/api/gb28181/parent-platform/${parentPlatformId}/share-group/${groupId}/shared/page`,
     data,
   )
 
 /** 批量挂载通道到分组 */
 export const addSharesApi = (
-  platformId: string,
+  parentPlatformId: string,
   groupId: string,
   data: GbAddShareRequest,
 ) =>
   post<{ added: number }>(
-    `/api/gb28181/parent-platform/${platformId}/share-group/${groupId}/share`,
+    `/api/gb28181/parent-platform/${parentPlatformId}/share-group/${groupId}/share`,
     data,
   )
 
 /** 卸载单条通道 */
 export const removeShareApi = (
-  platformId: string,
+  parentPlatformId: string,
   groupId: string,
   resourceId: string,
 ) =>
   del<void>(
-    `/api/gb28181/parent-platform/${platformId}/share-group/${groupId}/share/${resourceId}`,
+    `/api/gb28181/parent-platform/${parentPlatformId}/share-group/${groupId}/share/${resourceId}`,
   )
 
 /** 清空分组下挂载 */
-export const clearSharesApi = (platformId: string, groupId: string) =>
+export const clearSharesApi = (parentPlatformId: string, groupId: string) =>
   del<{ cleared: number }>(
-    `/api/gb28181/parent-platform/${platformId}/share-group/${groupId}/share`,
+    `/api/gb28181/parent-platform/${parentPlatformId}/share-group/${groupId}/share`,
   )
 
 /** 清空平台下全部挂载 */
-export const clearAllSharesByPlatformApi = (platformId: string) =>
-  del<{ cleared: number }>(`/api/gb28181/parent-platform/${platformId}/share`)
+export const clearAllSharesByPlatformApi = (parentPlatformId: string) =>
+  del<{ cleared: number }>(`/api/gb28181/parent-platform/${parentPlatformId}/share`)
 
 /** 主动推送目录给上级平台 */
-export const pushCatalogApi = (platformId: string) =>
-  post<void>(`/api/gb28181/parent-platform/${platformId}/push-catalog`)
+export const pushCatalogApi = (parentPlatformId: string) =>
+  post<void>(`/api/gb28181/parent-platform/${parentPlatformId}/push-catalog`)
 
 /** 一键添加所有未挂载通道到分组 */
-export const addAllSharesApi = (platformId: string, groupId: string) =>
+export const addAllSharesApi = (parentPlatformId: string, groupId: string) =>
   post<{ added: number }>(
-    `/api/gb28181/parent-platform/${platformId}/share-group/${groupId}/share-all`,
+    `/api/gb28181/parent-platform/${parentPlatformId}/share-group/${groupId}/share-all`,
   )
 
 /* ===== 级联平台：接入禁用黑名单 ===== */

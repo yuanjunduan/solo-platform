@@ -718,7 +718,8 @@ export interface GbPlatformGroup {
   name: string
   /** 20 位国标业务码（推送 XML DeviceID 用） */
   code: string
-  platformId: string
+  /** 所属上级平台主键（后端列 parent_platform_id） */
+  parentPlatformId: string
   /** 父分组 id，根节点 = 0 */
   parentId: string
   children?: GbPlatformGroup[]

@@ -74,12 +74,14 @@ SET @sql := IF(
 );
 PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
 
--- 4.2 唯一键 uk_platform_channel(platform_id, device_id, channel_id)
+-- 4.2 唯一键 uk_platform_channel(parent_platform_id, device_id, channel_id)
+--     注：上级平台主键列已改名为 parent_platform_id（见 alter_rename_parent_platform_id.sql），
+--     本索引通常已在库里且名字不变，这段仅在缺索引时补建
 SET @sql := IF(
     EXISTS(SELECT 1 FROM information_schema.STATISTICS
             WHERE TABLE_SCHEMA = @db AND TABLE_NAME = 'gb_platform_share' AND INDEX_NAME = 'uk_platform_channel'),
     'SELECT ''[skip] gb_platform_share.uk_platform_channel 已存在'' AS msg',
-    'ALTER TABLE gb_platform_share ADD UNIQUE KEY uk_platform_channel (platform_id, device_id, channel_id)'
+    'ALTER TABLE gb_platform_share ADD UNIQUE KEY uk_platform_channel (parent_platform_id, device_id, channel_id)'
 );
 PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
 

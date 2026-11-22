@@ -46,9 +46,9 @@ public class PlatformGroupController {
     @PostMapping("/{id}/share-group")
     @RequirePermission({"gb28181:share-group:add"})
     public Result<Void> createShareGroup(
-            @PathVariable("id") Long platformId,
+            @PathVariable("id") Long parentPlatformId,
             @Valid @RequestBody GbPlatformGroupSaveRequest req) {
-        platformGroupService.createGroup(platformId, req);
+        platformGroupService.createGroup(parentPlatformId, req);
         return Result.success();
     }
 
@@ -59,10 +59,10 @@ public class PlatformGroupController {
     @PutMapping("/{id}/share-group/{groupId}")
     @RequirePermission({"gb28181:share-group:edit"})
     public Result<Void> updateShareGroup(
-            @PathVariable("id") Long platformId,
+            @PathVariable("id") Long parentPlatformId,
             @PathVariable("groupId") Long groupId,
             @Valid @RequestBody GbPlatformGroupSaveRequest req) {
-        platformGroupService.updateGroup(platformId, groupId, req);
+        platformGroupService.updateGroup(parentPlatformId, groupId, req);
         return Result.success();
     }
 
@@ -73,9 +73,9 @@ public class PlatformGroupController {
     @DeleteMapping("/{id}/share-group/{groupId}")
     @RequirePermission({"gb28181:share-group:delete"})
     public Result<Void> deleteShareGroup(
-            @PathVariable("id") Long platformId,
+            @PathVariable("id") Long parentPlatformId,
             @PathVariable("groupId") Long groupId) {
-        platformGroupService.deleteGroup(platformId, groupId);
+        platformGroupService.deleteGroup(parentPlatformId, groupId);
         return Result.success();
     }
 }

@@ -984,47 +984,47 @@ CREATE UNIQUE INDEX uk_server_gb_id ON gb_parent_platform (server_gb_id);
 DROP TABLE IF EXISTS gb_platform_group;
 CREATE TABLE gb_platform_group
 (
-    id           bigint NOT NULL,
-    name         varchar(64) NOT NULL,
-    code         varchar(20) NOT NULL,
-    platform_id  bigint NOT NULL,
-    parent_id    bigint NOT NULL,
-    create_time  timestamp(0) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    update_time  timestamp(0) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    id                 bigint NOT NULL,
+    name               varchar(64) NOT NULL,
+    code               varchar(20) NOT NULL,
+    parent_platform_id bigint NOT NULL,
+    parent_id          bigint NOT NULL,
+    create_time        timestamp(0) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    update_time        timestamp(0) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (id)
 );
 COMMENT ON COLUMN gb_platform_group.id IS '主键ID';
 COMMENT ON COLUMN gb_platform_group.name IS '分组名称';
 COMMENT ON COLUMN gb_platform_group.code IS '分组国标编码';
-COMMENT ON COLUMN gb_platform_group.platform_id IS '上级平台主键';
+COMMENT ON COLUMN gb_platform_group.parent_platform_id IS '上级平台主键 gb_parent_platform.id';
 COMMENT ON COLUMN gb_platform_group.parent_id IS '父分组主键';
-CREATE UNIQUE INDEX uk_platform_code ON gb_platform_group (platform_id, code);
-CREATE INDEX idx_platform_parent ON gb_platform_group (platform_id, parent_id);
+CREATE UNIQUE INDEX uk_platform_code ON gb_platform_group (parent_platform_id, code);
+CREATE INDEX idx_platform_parent ON gb_platform_group (parent_platform_id, parent_id);
 
 DROP TABLE IF EXISTS gb_platform_share;
 CREATE TABLE gb_platform_share
 (
-    id            bigint NOT NULL,
-    platform_id   bigint NOT NULL,
-    group_id      bigint NOT NULL,
-    device_id     varchar(50) NOT NULL DEFAULT '',
-    channel_id    varchar(50) NOT NULL DEFAULT '',
-    resource_id   bigint NOT NULL,
-    exposed_code  varchar(20) DEFAULT NULL,
-    create_time   timestamp(0) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    id                 bigint NOT NULL,
+    parent_platform_id bigint NOT NULL,
+    group_id           bigint NOT NULL,
+    device_id          varchar(50) NOT NULL DEFAULT '',
+    channel_id         varchar(50) NOT NULL DEFAULT '',
+    resource_id        bigint NOT NULL,
+    exposed_code       varchar(20) DEFAULT NULL,
+    create_time        timestamp(0) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (id)
 );
 COMMENT ON COLUMN gb_platform_share.id IS '主键ID';
-COMMENT ON COLUMN gb_platform_share.platform_id IS '上级平台主键';
+COMMENT ON COLUMN gb_platform_share.parent_platform_id IS '上级平台主键 gb_parent_platform.id';
 COMMENT ON COLUMN gb_platform_share.group_id IS '推送分组主键';
 COMMENT ON COLUMN gb_platform_share.device_id IS '通道所属设备国标ID（业务键）';
 COMMENT ON COLUMN gb_platform_share.channel_id IS '通道国标码（业务键，上级暴露码见 exposed_code）';
 COMMENT ON COLUMN gb_platform_share.resource_id IS '【仅回滚兼容】通道主键 gb_device_channel.id，真相以 device_id+channel_id 为准';
 COMMENT ON COLUMN gb_platform_share.exposed_code IS '对上级暴露国标码';
-CREATE UNIQUE INDEX uk_platform_channel ON gb_platform_share (platform_id, device_id, channel_id);
-CREATE UNIQUE INDEX uk_platform_resource ON gb_platform_share (platform_id, resource_id);
-CREATE UNIQUE INDEX uk_platform_exposed_code ON gb_platform_share (platform_id, exposed_code);
-CREATE INDEX idx_platform_group ON gb_platform_share (platform_id, group_id);
+CREATE UNIQUE INDEX uk_platform_channel ON gb_platform_share (parent_platform_id, device_id, channel_id);
+CREATE UNIQUE INDEX uk_platform_resource ON gb_platform_share (parent_platform_id, resource_id);
+CREATE UNIQUE INDEX uk_platform_exposed_code ON gb_platform_share (parent_platform_id, exposed_code);
+CREATE INDEX idx_platform_group ON gb_platform_share (parent_platform_id, group_id);
 
 DROP TABLE IF EXISTS gb_device_alarm;
 CREATE TABLE gb_device_alarm

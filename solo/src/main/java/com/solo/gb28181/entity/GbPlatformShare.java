@@ -23,9 +23,9 @@ public class GbPlatformShare {
     @JsonSerialize(using = ToStringSerializer.class)
     private Long id;
 
-    @Schema(description = "上级平台主键（逻辑关联 gb_parent_platform.id）")
+    @Schema(description = "上级平台主键（列 parent_platform_id，逻辑关联 gb_parent_platform.id）")
     @JsonSerialize(using = ToStringSerializer.class)
-    private Long platformId;
+    private Long parentPlatformId;
 
     @Schema(description = "所属推送分组主键（逻辑关联 gb_platform_group.id；UI 强制先在弹窗左侧选中分组才能挂载，同一通道在本平台只能落在一个分组下）")
     @JsonSerialize(using = ToStringSerializer.class)

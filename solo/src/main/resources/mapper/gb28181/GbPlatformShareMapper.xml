@@ -25,7 +25,7 @@
         FROM gb_device_channel ch
         INNER JOIN gb_platform_share s
           ON s.device_id = ch.device_id AND s.channel_id = ch.channel_id
-        WHERE s.platform_id = #{platformId}
+        WHERE s.parent_platform_id = #{parentPlatformId}
         ORDER BY ch.channel_id ASC
     </select>
 
@@ -39,7 +39,7 @@
         INNER JOIN gb_platform_share s
           ON s.device_id = ch.device_id AND s.channel_id = ch.channel_id
         <where>
-            s.platform_id = #{platformId}
+            s.parent_platform_id = #{parentPlatformId}
             AND s.group_id = #{groupId}
             <if test="keyword != null and keyword != ''">
                 AND (ch.name LIKE CONCAT('%', #{keyword}, '%')
@@ -51,7 +51,7 @@
 
     <!--
       某上级平台"未挂载"的通道分页查询（推送目录弹窗"添加"picker）。
-      "未挂载"= 不在该平台任何 share 里——按 (platform_id, device_id, channel_id) UK，channel 一旦挂载到任一组就
+      "未挂载"= 不在该平台任何 share 里——按 (parent_platform_id, device_id, channel_id) UK，channel 一旦挂载到任一组就
       不再属于"未挂载"。想在另一组里出现，必须先从原组卸。
       仅看通道（parental=0；分组不参与推送）。走 NOT EXISTS anti-join 优化。
     -->
@@ -61,7 +61,7 @@
         WHERE ch.parental = 0
           AND NOT EXISTS (
               SELECT 1 FROM gb_platform_share s
-              WHERE s.platform_id = #{platformId}
+              WHERE s.parent_platform_id = #{parentPlatformId}
                 AND s.device_id = ch.device_id
                 AND s.channel_id = ch.channel_id
           )
@@ -73,7 +73,7 @@
     </select>
 
     <!--
-      列出某平台"未挂载"的所有通道 id（不分页；按 platform_id 范围），供"一键添加"使用。
+      列出某平台"未挂载"的所有通道 id（不分页；按 parent_platform_id 范围），供"一键添加"使用。
     -->
     <select id="selectUnmountedByGroupAllIds" resultType="java.lang.Long">
         SELECT ch.id
@@ -81,7 +81,7 @@
         WHERE ch.parental = 0
           AND NOT EXISTS (
               SELECT 1 FROM gb_platform_share s
-              WHERE s.platform_id = #{platformId}
+              WHERE s.parent_platform_id = #{parentPlatformId}
                 AND s.device_id = ch.device_id
                 AND s.channel_id = ch.channel_id
           )

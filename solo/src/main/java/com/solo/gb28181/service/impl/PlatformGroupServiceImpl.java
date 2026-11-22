@@ -52,10 +52,10 @@ public class PlatformGroupServiceImpl implements PlatformGroupService {
     private final CatalogShareService catalogShareService;
 
     @Override
-    public List<GbPlatformGroupResponse> listGroupTree(Long platformId) {
+    public List<GbPlatformGroupResponse> listGroupTree(Long parentPlatformId) {
         List<GbPlatformGroup> all = groupMapper.selectList(
                 new LambdaQueryWrapper<GbPlatformGroup>()
-                        .eq(GbPlatformGroup::getPlatformId, platformId)
+                        .eq(GbPlatformGroup::getParentPlatformId, parentPlatformId)
                         .orderByAsc(GbPlatformGroup::getParentId, GbPlatformGroup::getId));
         if (all.isEmpty()) {
             return Collections.emptyList();
@@ -77,14 +77,14 @@ public class PlatformGroupServiceImpl implements PlatformGroupService {
 
     @Override
     @Transactional
-    public void createGroup(Long platformId, GbPlatformGroupSaveRequest req) {
+    public void createGroup(Long parentPlatformId, GbPlatformGroupSaveRequest req) {
         validateCode(req.getCode());
-        // 父分组（如果非 0）必须属于同一 platformId
-        validateParent(platformId, req.getParentId(), null);
+        // 父分组（如果非 0）必须属于同一 parentPlatformId
+        validateParent(parentPlatformId, req.getParentId(), null);
         validateHierarchy(req.getParentId(), req.getCode(), null);
         // code 平台内唯一
         Long same = groupMapper.selectCount(new LambdaQueryWrapper<GbPlatformGroup>()
-                .eq(GbPlatformGroup::getPlatformId, platformId)
+                .eq(GbPlatformGroup::getParentPlatformId, parentPlatformId)
                 .eq(GbPlatformGroup::getCode, req.getCode()));
         if (same != null && same > 0) {
             throw new ServiceException("国标编码在该平台下已存在");
@@ -92,26 +92,26 @@ public class PlatformGroupServiceImpl implements PlatformGroupService {
         GbPlatformGroup entity = new GbPlatformGroup();
         entity.setName(req.getName());
         entity.setCode(req.getCode());
-        entity.setPlatformId(platformId);
+        entity.setParentPlatformId(parentPlatformId);
         entity.setParentId(req.getParentId());
         groupMapper.insert(entity);
     }
 
     @Override
     @Transactional
-    public void updateGroup(Long platformId, Long groupId, GbPlatformGroupSaveRequest req) {
-        GbPlatformGroup existing = requireOwnedGroup(platformId, groupId);
+    public void updateGroup(Long parentPlatformId, Long groupId, GbPlatformGroupSaveRequest req) {
+        GbPlatformGroup existing = requireOwnedGroup(parentPlatformId, groupId);
         // 不能把自己设为自己的父级
         if (req.getParentId() != null && req.getParentId().equals(groupId)) {
             throw new ServiceException("不能把分组设为自己的父分组");
         }
         validateCode(req.getCode());
         // 父分组校验
-        validateParent(platformId, req.getParentId(), groupId);
+        validateParent(parentPlatformId, req.getParentId(), groupId);
         validateHierarchy(req.getParentId(), req.getCode(), groupId);
         // code 唯一（除自己外）
         Long same = groupMapper.selectCount(new LambdaQueryWrapper<GbPlatformGroup>()
-                .eq(GbPlatformGroup::getPlatformId, platformId)
+                .eq(GbPlatformGroup::getParentPlatformId, parentPlatformId)
                 .eq(GbPlatformGroup::getCode, req.getCode())
                 .ne(GbPlatformGroup::getId, groupId));
         if (same != null && same > 0) {
@@ -120,7 +120,7 @@ public class PlatformGroupServiceImpl implements PlatformGroupService {
         // 事件报文要用变更前的 code / name / parentId 定位旧节点，先拍一份快照
         GbPlatformGroup before = new GbPlatformGroup();
         before.setId(existing.getId());
-        before.setPlatformId(existing.getPlatformId());
+        before.setParentPlatformId(existing.getParentPlatformId());
         before.setCode(existing.getCode());
         before.setName(existing.getName());
         before.setParentId(existing.getParentId());
@@ -129,44 +129,44 @@ public class PlatformGroupServiceImpl implements PlatformGroupService {
         existing.setParentId(req.getParentId());
         groupMapper.updateById(existing);
         // 改名发 UPDATE；换父/改码由服务层展开成「先 DEL 旧位置、再按新父链 ADD」的保序序列
-        catalogShareService.notifyGroupUpdated(platformId, before, existing);
-        eventPublisher.publishEvent(new ShareChangedEvent(this, platformId));
+        catalogShareService.notifyGroupUpdated(parentPlatformId, before, existing);
+        eventPublisher.publishEvent(new ShareChangedEvent(this, parentPlatformId));
     }
 
     @Override
     @Transactional
-    public void deleteGroup(Long platformId, Long groupId) {
-        requireOwnedGroup(platformId, groupId);
+    public void deleteGroup(Long parentPlatformId, Long groupId) {
+        requireOwnedGroup(parentPlatformId, groupId);
         // 拒绝有子节点
         Long childCount = groupMapper.selectCount(new LambdaQueryWrapper<GbPlatformGroup>()
-                .eq(GbPlatformGroup::getPlatformId, platformId)
+                .eq(GbPlatformGroup::getParentPlatformId, parentPlatformId)
                 .eq(GbPlatformGroup::getParentId, groupId));
         if (childCount != null && childCount > 0) {
             throw new ServiceException("该分组下还有子分组，请先删除子分组");
         }
         // 删之前先把要撤销的节点取出来：组内通道在前、分组自身在后（严格叶子 → 根）。
         // 删完 share 和分组数据就构造不出 DEL 报文了。
-        List<GbDeviceChannel> revoke = catalogShareService.loadGroupRevokeItems(platformId, groupId);
+        List<GbDeviceChannel> revoke = catalogShareService.loadGroupRevokeItems(parentPlatformId, groupId);
         // 联动清理该组下所有 share，避免 group_id 孤儿
         int unmounted = shareMapper.delete(
                 new LambdaQueryWrapper<GbPlatformShare>()
-                        .eq(GbPlatformShare::getPlatformId, platformId)
+                        .eq(GbPlatformShare::getParentPlatformId, parentPlatformId)
                         .eq(GbPlatformShare::getGroupId, groupId));
         groupMapper.deleteById(groupId);
         // 空分组也要撤：上级对全量快照只做 upsert，不会因为"快照里没有"而删除节点
-        catalogShareService.sendRevokeEvents(platformId, revoke);
-        log.info("[{}] 删分组 platformId={} groupId={} 联动清理挂载={} 撤销节点={}（通道 {} + 分组 1）",
-                LOG_TAG, platformId, groupId, unmounted, revoke.size(), Math.max(0, revoke.size() - 1));
-        eventPublisher.publishEvent(new ShareChangedEvent(this, platformId));
+        catalogShareService.sendRevokeEvents(parentPlatformId, revoke);
+        log.info("[{}] 删分组 parentPlatformId={} groupId={} 联动清理挂载={} 撤销节点={}（通道 {} + 分组 1）",
+                LOG_TAG, parentPlatformId, groupId, unmounted, revoke.size(), Math.max(0, revoke.size() - 1));
+        eventPublisher.publishEvent(new ShareChangedEvent(this, parentPlatformId));
     }
 
     @Override
-    public GbPlatformGroup requireOwnedGroup(Long platformId, Long groupId) {
+    public GbPlatformGroup requireOwnedGroup(Long parentPlatformId, Long groupId) {
         GbPlatformGroup g = groupMapper.selectById(groupId);
         if (g == null) {
             throw new ServiceException("分组不存在");
         }
-        if (!platformId.equals(g.getPlatformId())) {
+        if (!parentPlatformId.equals(g.getParentPlatformId())) {
             throw new ServiceException("分组不属于该上级平台");
         }
         return g;
@@ -240,9 +240,9 @@ public class PlatformGroupServiceImpl implements PlatformGroupService {
     }
 
     /**
-     * 校验父分组（如果非 0）必须存在 + 属于同一 platformId
+     * 校验父分组（如果非 0）必须存在 + 属于同一 parentPlatformId
      */
-    private void validateParent(Long platformId, Long parentId, Long excludeGroupId) {
+    private void validateParent(Long parentPlatformId, Long parentId, Long excludeGroupId) {
         if (parentId == null || parentId == 0L) {
             return;
         }
@@ -250,7 +250,7 @@ public class PlatformGroupServiceImpl implements PlatformGroupService {
         if (parent == null) {
             throw new ServiceException("父分组不存在");
         }
-        if (!platformId.equals(parent.getPlatformId())) {
+        if (!parentPlatformId.equals(parent.getParentPlatformId())) {
             throw new ServiceException("父分组不属于该上级平台");
         }
         if (excludeGroupId != null && parentId.equals(excludeGroupId)) {

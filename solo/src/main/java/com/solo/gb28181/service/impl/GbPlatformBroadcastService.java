@@ -273,13 +273,13 @@ public class GbPlatformBroadcastService {
         if (platform.getId() == null) {
             return null;
         }
-        Long platformId = platform.getId();
+        Long parentPlatformId = platform.getId();
 
         GbDeviceChannel channel = channelMapper.selectOne(
                 new LambdaQueryWrapper<GbDeviceChannel>().eq(GbDeviceChannel::getChannelId, deviceId));
         if (channel != null && channel.getId() != null) {
             GbPlatformShare share = shareMapper.selectOne(new LambdaQueryWrapper<GbPlatformShare>()
-                    .eq(GbPlatformShare::getPlatformId, platformId)
+                    .eq(GbPlatformShare::getParentPlatformId, parentPlatformId)
                     .eq(GbPlatformShare::getDeviceId, channel.getDeviceId())
                     .eq(GbPlatformShare::getChannelId, channel.getChannelId())
                     .last("LIMIT 1"));
@@ -289,7 +289,7 @@ public class GbPlatformBroadcastService {
         }
 
         GbPlatformShare share = shareMapper.selectOne(new LambdaQueryWrapper<GbPlatformShare>()
-                .eq(GbPlatformShare::getPlatformId, platformId)
+                .eq(GbPlatformShare::getParentPlatformId, parentPlatformId)
                 .eq(GbPlatformShare::getExposedCode, deviceId)
                 .last("LIMIT 1"));
         if (share == null) {
