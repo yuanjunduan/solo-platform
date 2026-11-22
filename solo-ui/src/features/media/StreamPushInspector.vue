@@ -54,7 +54,7 @@
         </div>
         <div class="flex items-center justify-between gap-3">
           <span class="shrink-0 text-muted-foreground">已持续</span>
-          <span>{{ formatDuration(push.aliveSecond) }}</span>
+          <span>{{ aliveText }}</span>
         </div>
         <div class="flex items-center justify-between gap-3">
           <span class="shrink-0 text-muted-foreground">开始时间</span>
@@ -94,6 +94,7 @@
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue'
 import {
   IconX,
   IconTrash,
@@ -105,6 +106,8 @@ import { stopStreamPushApi, deleteStreamPushApi } from '@/api/media'
 import { PERM } from '@/features/access/permissions'
 import { toast } from '@/lib/toast'
 import { confirm } from '@/lib/confirm'
+import { secondsSince } from '@/lib/datetime'
+import { useNowTick } from '@/shared/composables/useNowTick'
 import Button from '@/components/ui/button/Button.vue'
 import Badge from '@/components/ui/badge/Badge.vue'
 
@@ -132,6 +135,12 @@ const formatDuration = (sec?: number) => {
   if (m) return `${m} 分 ${s} 秒`
   return `${s} 秒`
 }
+
+/* 已持续按 pushTime 实时换算：aliveSecond 只是流注册瞬间的快照 */
+const now = useNowTick()
+const aliveText = computed(() =>
+  formatDuration(secondsSince(props.push.pushTime, now.value) ?? props.push.aliveSecond),
+)
 
 const onStop = async () => {
   const ok = await confirm({

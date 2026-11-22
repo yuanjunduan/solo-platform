@@ -5,6 +5,20 @@ export const parseDateTime = (s: string): Date | null => {
   return Number.isNaN(d.getTime()) ? null : d
 }
 
+/**
+ * 距某时间点已过去的秒数（解析失败返回 null）。
+ * 用于“已持续”这类按时间点实时换算的展示，避免依赖后端快照字段。
+ */
+export const secondsSince = (
+  s: string | undefined,
+  now: number = Date.now(),
+): number | null => {
+  if (!s) return null
+  const d = parseDateTime(s)
+  if (!d) return null
+  return Math.max(0, Math.floor((now - d.getTime()) / 1000))
+}
+
 /** 相对时间：刚刚 / n 分钟前 / n 小时前 / n 天前 / 更早显示日期 */
 export const fromNow = (s: string, now: number = Date.now()): string => {
   const d = parseDateTime(s)

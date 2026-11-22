@@ -143,7 +143,7 @@
                 {{ p.clientId || '—' }}
               </td>
               <td class="px-3 py-2 text-xs text-muted-foreground">
-                {{ formatDuration(p.aliveSecond) }}
+                {{ aliveText(p) }}
               </td>
               <td class="px-3 py-2 font-mono text-xs text-muted-foreground">
                 {{ p.pushTime || '—' }}
@@ -235,6 +235,8 @@ import {
   batchDeleteStreamPushApi,
 } from '@/api/media'
 import { useResource } from '@/shared/composables/useResource'
+import { useNowTick } from '@/shared/composables/useNowTick'
+import { secondsSince } from '@/lib/datetime'
 import { PERM } from '@/features/access/permissions'
 import { toast } from '@/lib/toast'
 import { confirm } from '@/lib/confirm'
@@ -264,15 +266,18 @@ const hasCondition = computed(
     serverFilter.value !== '__all__',
 )
 
+const LIST_PAGE_SIZE = 50
+
+/** 当前筛选条件（首屏查询与轮询共用同一口径） */
+const currentFilters = () => ({
+  app: app.value.trim() || undefined,
+  stream: stream.value.trim() || undefined,
+  mediaServerId: serverFilter.value === '__all__' ? undefined : serverFilter.value,
+})
+
 const resource = useResource<StreamPushPageRequest, StreamPush>({
-  fetcher: (q) =>
-    getStreamPushPageApi({
-      ...q,
-      app: app.value.trim() || undefined,
-      stream: stream.value.trim() || undefined,
-      mediaServerId: serverFilter.value === '__all__' ? undefined : serverFilter.value,
-    }),
-  initial: { page: 1, pageSize: 50 },
+  fetcher: (q) => getStreamPushPageApi({ ...q, ...currentFilters() }),
+  initial: { page: 1, pageSize: LIST_PAGE_SIZE },
 })
 
 let debounceTimer: ReturnType<typeof setTimeout> | null = null
@@ -390,6 +395,63 @@ const formatDuration = (sec?: number) => {
   return `${s}s`
 }
 
+/* 已持续：按 pushTime 实时换算。后端的 aliveSecond 只是流注册瞬间的快照，不会随推流增长 */
+const now = useNowTick()
+const aliveText = (p: StreamPush) =>
+  formatDuration(secondsSince(p.pushTime, now.value) ?? p.aliveSecond)
+
+/* 外部推流的出现/消失由 ZLM 回调写入后端，前端只能定时拉取感知 */
+const POLL_INTERVAL_MS = 5000
+let pollTimer: ReturnType<typeof setInterval> | null = null
+let polling = false
+
+const sameRow = (a: StreamPush, b: StreamPush) =>
+  a.id === b.id &&
+  a.streamSchema === b.streamSchema &&
+  a.mediaServerId === b.mediaServerId &&
+  a.clientId === b.clientId &&
+  a.originType === b.originType &&
+  a.pushTime === b.pushTime
+
+const pollOnce = async () => {
+  if (polling || resource.loading.value || batchDeleting.value) return
+  if (document.visibilityState !== 'visible') return
+  polling = true
+  try {
+    // 按「当前已加载条数」作为一页整体重拉：既不丢已滚动出来的页，也不打乱续页游标
+    const pageSize = Math.max(resource.items.value.length, LIST_PAGE_SIZE)
+    const res = await getStreamPushPageApi({ page: 1, pageSize, ...currentFilters() })
+    const rows = res.data.rows
+    const prev = resource.items.value
+    const changed = rows.length !== prev.length || rows.some((r, i) => !sameRow(prev[i], r))
+    if (!changed) return
+    resource.items.value = rows
+    resource.total.value = res.data.total
+    resource.finished.value = rows.length >= res.data.total
+    resource.query.page = Math.floor(rows.length / LIST_PAGE_SIZE) + 1
+    if (selected.value) {
+      const fresh = rows.find((r) => r.id === selected.value!.id)
+      if (fresh) selected.value = fresh
+      else onCloseInspector()
+    }
+  } catch {
+    // 轮询失败静默，等下一轮
+  } finally {
+    polling = false
+  }
+}
+
+const startPolling = () => {
+  if (pollTimer) return
+  pollTimer = setInterval(pollOnce, POLL_INTERVAL_MS)
+}
+
+const stopPolling = () => {
+  if (!pollTimer) return
+  clearInterval(pollTimer)
+  pollTimer = null
+}
+
 /* 键盘流：仅面板激活时响应 */
 const isTypingTarget = (el: EventTarget | null) =>
   el instanceof HTMLElement &&
@@ -433,6 +495,19 @@ const onGlobalKeydown = (e: KeyboardEvent) => {
 
 let observer: IntersectionObserver | null = null
 
+/* 页签切走时停掉轮询，切回时立即补一次再恢复定时 */
+watch(
+  () => props.active,
+  (v) => {
+    if (v) {
+      pollOnce()
+      startPolling()
+    } else {
+      stopPolling()
+    }
+  },
+)
+
 onMounted(async () => {
   window.addEventListener('keydown', onGlobalKeydown)
   await resource.load(true)
@@ -444,12 +519,15 @@ onMounted(async () => {
     { root: scrollerRef.value, rootMargin: '80px' },
   )
   if (sentinelRef.value) observer.observe(sentinelRef.value)
+
+  if (props.active) startPolling()
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onGlobalKeydown)
   observer?.disconnect()
   if (debounceTimer) clearTimeout(debounceTimer)
+  stopPolling()
 })
 
 watch(
