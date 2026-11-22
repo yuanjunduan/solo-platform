@@ -67,5 +67,5 @@ _evidence_*/
 # 数据库改结构前的本地备份（仅回滚用，不入库）；当前这份保留在 git status 中可见
 _backup_*.json
 !_backup_solo_db_20261122.json
-# 一次性升级脚本：已部署实例执行完即弃，不作为演进手段
-sql/alter_gb_local_config.sql
+# 一次性升级脚本：已部署实例执行完即弃，不作为演进手段（保留本地，不入库）
+sql/alter_*.sql
