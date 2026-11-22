@@ -1009,7 +1009,6 @@ CREATE TABLE gb_platform_share
     group_id           bigint NOT NULL,
     device_id          varchar(50) NOT NULL DEFAULT '',
     channel_id         varchar(50) NOT NULL DEFAULT '',
-    resource_id        bigint NOT NULL,
     exposed_code       varchar(20) DEFAULT NULL,
     create_time        timestamp(0) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (id)
@@ -1019,10 +1018,8 @@ COMMENT ON COLUMN gb_platform_share.parent_platform_id IS '上级平台主键 gb
 COMMENT ON COLUMN gb_platform_share.group_id IS '推送分组主键';
 COMMENT ON COLUMN gb_platform_share.device_id IS '通道所属设备国标ID（业务键）';
 COMMENT ON COLUMN gb_platform_share.channel_id IS '通道国标码（业务键，上级暴露码见 exposed_code）';
-COMMENT ON COLUMN gb_platform_share.resource_id IS '【仅回滚兼容】通道主键 gb_device_channel.id，真相以 device_id+channel_id 为准';
 COMMENT ON COLUMN gb_platform_share.exposed_code IS '对上级暴露国标码';
 CREATE UNIQUE INDEX uk_platform_channel ON gb_platform_share (parent_platform_id, device_id, channel_id);
-CREATE UNIQUE INDEX uk_platform_resource ON gb_platform_share (parent_platform_id, resource_id);
 CREATE UNIQUE INDEX uk_platform_exposed_code ON gb_platform_share (parent_platform_id, exposed_code);
 CREATE INDEX idx_platform_group ON gb_platform_share (parent_platform_id, group_id);
 

@@ -160,15 +160,11 @@ public class DeviceControlMessageHandler extends SipRequestProcessorBase impleme
         return resolveShareChannel(share);
     }
 
-    /** 按业务键定位 share 指向的当前通道；旧数据未回填业务键时退回 resource_id */
+    /** 按业务键 (device_id, channel_id) 定位 share 指向的当前通道 */
     private GbDeviceChannel resolveShareChannel(GbPlatformShare share) {
-        if (share.getDeviceId() != null && !share.getDeviceId().isBlank()
-                && share.getChannelId() != null && !share.getChannelId().isBlank()) {
-            return channelMapper.selectOne(new LambdaQueryWrapper<GbDeviceChannel>()
-                    .eq(GbDeviceChannel::getDeviceId, share.getDeviceId())
-                    .eq(GbDeviceChannel::getChannelId, share.getChannelId()));
-        }
-        return share.getResourceId() == null ? null : channelMapper.selectById(share.getResourceId());
+        return channelMapper.selectOne(new LambdaQueryWrapper<GbDeviceChannel>()
+                .eq(GbDeviceChannel::getDeviceId, share.getDeviceId())
+                .eq(GbDeviceChannel::getChannelId, share.getChannelId()));
     }
 
     /** 回 SIP 状态码，应答异常只记日志 */

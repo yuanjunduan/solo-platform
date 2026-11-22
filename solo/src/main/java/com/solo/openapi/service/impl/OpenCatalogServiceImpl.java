@@ -92,15 +92,9 @@ public class OpenCatalogServiceImpl implements OpenCatalogService {
             return null;
         }
         GbPlatformShare share = byKey.values().iterator().next();
-        GbDeviceChannel channel;
-        if (StringUtils.hasText(share.getDeviceId()) && StringUtils.hasText(share.getChannelId())) {
-            channel = channelMapper.selectOne(new LambdaQueryWrapper<GbDeviceChannel>()
-                    .eq(GbDeviceChannel::getDeviceId, share.getDeviceId())
-                    .eq(GbDeviceChannel::getChannelId, share.getChannelId()));
-        } else {
-            // 旧数据未回填业务键：退回主键
-            channel = share.getResourceId() == null ? null : channelMapper.selectById(share.getResourceId());
-        }
+        GbDeviceChannel channel = channelMapper.selectOne(new LambdaQueryWrapper<GbDeviceChannel>()
+                .eq(GbDeviceChannel::getDeviceId, share.getDeviceId())
+                .eq(GbDeviceChannel::getChannelId, share.getChannelId()));
         if (channel != null) {
             channel.setExposedCode(channelId);
         }

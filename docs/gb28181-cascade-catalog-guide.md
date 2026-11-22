@@ -72,10 +72,10 @@
 |---|---|---|
 | `gb_parent_platform` | 上级平台配置 | `server_gb_id`（上级编码）、`server_ip/port`、`character_set` |
 | `gb_platform_group` | 推送分组树 | `code`（20 位 215/216）、`parent_id`（**本地主键**，非编码） |
-| `gb_platform_share` | 通道挂载关系 | `platform_id` + `group_id` + `resource_id`(通道主键)、`exposed_code`（对外推送码） |
+| `gb_platform_share` | 通道挂载关系 | `parent_platform_id` + `group_id` + `device_id`/`channel_id`（业务键）、`exposed_code`（对外推送码） |
 | `gb_device_channel` | 通道 | `channel_id`、`parental`、`status`、`ptz_type`… |
 
-约束：`uk_platform_resource(platform_id, resource_id)` —— 同一通道在同一上级平台下**只能挂一个分组**。
+约束：`uk_platform_channel(parent_platform_id, device_id, channel_id)` —— 同一通道在同一上级平台下**只能挂一个分组**。
 
 ### 2.2 三条推送链路
 
@@ -120,7 +120,7 @@
 
 **改代码时必须守住的 7 条约束：**
 
-1. **先取数据再删行**：`loadRevokeItems()` 必须在 `shareMapper.delete()` 之前调用。删完 share 只剩 resourceId，通道编码/名称/父分组码都拿不到，DEL 报文就构造不出来了。
+1. **先取数据再删行**：`loadRevokeItems()` 必须在 `shareMapper.delete()` 之前调用。删完 share 行，通道编码/名称/父分组码都拿不到，DEL 报文就构造不出来了。
 2. **DEL 用完整 Item**：带 `Name`/`ParentID`/`CivilCode`/`Status`，上级靠这些定位节点；极简 Item 在部分上级上会被忽略。
 3. **与会话口径一致**：`parentId` = 所在分组 GB 码，`DeviceID` 优先 `exposed_code`，与全量推送完全相同。
 4. **事件不依赖订阅**：直接走 `PlatformCommander`，订阅过期期间的变更也不会静默丢失；原有全量兜底仍受订阅限制。

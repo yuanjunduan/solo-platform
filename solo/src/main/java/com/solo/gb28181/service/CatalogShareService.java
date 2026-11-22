@@ -18,7 +18,7 @@ import java.util.List;
  * 推送给上级的目录 = 推送分组（{@code gb_platform_group}，215/216）+ 挂载通道（132）。</p>
  *
  * <p>share 与推送分组（{@code gb_platform_group}）关联：UI 强制先在弹窗左侧选中分组才能挂载。
- * 同一通道在同一平台下只能挂载一次（{@code uk_platform_resource}），换组要先卸载旧组。
+ * 同一通道在同一平台下只能挂载一次（{@code uk_platform_channel}），换组要先卸载旧组。
  * Catalog 响应 / INVITE 反查走全量（不分组）路径。</p>
  *
  * <p>撞码检测是<b>平台级</b>的：上级看到扁平 DeviceID 空间，跨组同码也会让上级 INVITE 认错通道，

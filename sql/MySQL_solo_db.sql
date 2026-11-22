@@ -727,12 +727,10 @@ CREATE TABLE gb_platform_share
     group_id           bigint      NOT NULL COMMENT '推送分组主键',
     device_id          varchar(50) NOT NULL DEFAULT '' COMMENT '通道所属设备国标ID（业务键）',
     channel_id         varchar(50) NOT NULL DEFAULT '' COMMENT '通道国标码（业务键，上级暴露码见 exposed_code）',
-    resource_id        bigint      NOT NULL COMMENT '【仅回滚兼容】通道主键 gb_device_channel.id，真相以 device_id+channel_id 为准',
     exposed_code       varchar(20)          DEFAULT NULL COMMENT '对上级暴露国标码',
     create_time        datetime    NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (id),
     UNIQUE KEY uk_platform_channel (parent_platform_id, device_id, channel_id),
-    UNIQUE KEY uk_platform_resource (parent_platform_id, resource_id),
     UNIQUE KEY uk_platform_exposed_code (parent_platform_id, exposed_code),
     KEY        idx_platform_group (parent_platform_id, group_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

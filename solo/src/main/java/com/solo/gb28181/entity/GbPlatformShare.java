@@ -37,10 +37,6 @@ public class GbPlatformShare {
     @Schema(description = "通道国标码（业务键；对上级暴露码见 exposedCode）")
     private String channelId;
 
-    @Schema(description = "【仅回滚兼容】通道主键（逻辑关联 gb_device_channel.id），真相以 deviceId+channelId 为准，通道重新同步后可能为空串或旧值")
-    @JsonSerialize(using = ToStringSerializer.class)
-    private Long resourceId;
-
     @Schema(description = "对上级暴露的 20 位国标码（撞码时分配，不撞码时为 NULL 表示透传 channel_id；本平台命名空间内唯一，上级 INVITE 按此码反查真实通道，同一通道对所有上级复用同一 exposed_code；撞码判定是平台级而非分组级）")
     private String exposedCode;
 

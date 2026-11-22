@@ -10,9 +10,8 @@
       透传字段：gb_platform_share.exposed_code → GbDeviceChannel.exposedCode（瞬态 @TableField(exist=false)）。
       本表只存通道（parental=0），分组不入表——所以所有查询无需按 type 过滤。
 
-      【关键】JOIN 一律用业务键 (device_id, channel_id)，不用 resource_id：
-      通道重新同步会物理删行换雪花主键，存主键会让共享指向悬空行；
-      resource_id 仅为回滚兼容保留，不参与任何查询。
+      【关键】JOIN 一律用业务键 (device_id, channel_id)：
+      通道重新同步会物理删行换雪花主键，本表不存通道主键，避免共享指向悬空行。
     -->
 
     <!--
