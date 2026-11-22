@@ -70,12 +70,87 @@
 
 | 表 | 作用 | 关键字段 |
 |---|---|---|
-| `gb_parent_platform` | 上级平台配置 | `server_gb_id`（上级编码）、`server_ip/port`、`character_set` |
-| `gb_platform_group` | 推送分组树 | `code`（20 位 215/216）、`parent_id`（**本地主键**，非编码） |
+| `gb_local_config` | 本平台国标身份与接入参数（单行表，`id=1`，非 NULL 时优先于 yaml） | `sip_id`/`sip_domain`、`sip_ip`/`sip_port`、`password`、`catalog_page_size` |
+| `gb_platform` | **接入禁用名单（黑名单）**，不是平台登记簿 | `platform_id`（下级平台国标码）、`enabled`（0 禁用 / 1 放行） |
+| `gb_parent_platform` | 上级平台配置 | `server_gb_id`（上级编码）、`server_ip/port`、`character_set`、`enabled`/`status` |
+| `gb_platform_group` | 推送给上级的分组树 | `code`（20 位 215/216）、`parent_platform_id`（→ `gb_parent_platform.id`）、`parent_id`（**本地主键**，非编码；0 = 根） |
 | `gb_platform_share` | 通道挂载关系 | `parent_platform_id` + `group_id` + `device_id`/`channel_id`（业务键）、`exposed_code`（对外推送码） |
-| `gb_device_channel` | 通道 | `channel_id`、`parental`、`status`、`ptz_type`… |
+| `gb_device` | 下级注册上来的设备（IPC/NVR/下级平台） | `device_id`（唯一）、`status`、`register_time`/`keepalive_time` |
+| `gb_device_channel` | **目录节点，分组与通道混存** | `device_id` + `channel_id`、`platform_id`（注册方国标码）、`parental`（1 分组 / 0 通道）、`parent_id`、`tree_path` |
+| `gb_ptz_preset` / `gb_ptz_cruise` / `gb_ptz_cruise_point` | 通道预置位 / 巡航路线 / 巡航点 | `channel_db_id`（→ `gb_device_channel.id`）、`preset_id`/`cruise_id` |
+| `gb_device_alarm` | 下级上报的报警（先落库再转发） | `device_id`/`channel_id`、`alarm_time`、`alarm_type`、`handle_status` |
+| `gb_mobile_position` | 移动设备 GPS 轨迹（先落库再转发） | `device_id`、`position_time`、经纬度/速度/方向 |
 
-约束：`uk_platform_channel(parent_platform_id, device_id, channel_id)` —— 同一通道在同一上级平台下**只能挂一个分组**。
+级联相关唯一键 / 索引：
+
+| 表 | 键 | 含义 |
+|---|---|---|
+| `gb_platform_share` | `uk_platform_channel(parent_platform_id, device_id, channel_id)` | 同一通道在同一上级平台下**只能挂一个分组** |
+| | `uk_platform_exposed_code(parent_platform_id, exposed_code)` | 同一上级平台下暴露码唯一；撞码时优先复用该通道历史旧码，无旧码才按 `(deviceId, channelId)` 派生 |
+| | `idx_platform_group(parent_platform_id, group_id)` | 按分组取挂载 |
+| `gb_platform_group` | `uk_platform_code(parent_platform_id, code)` | 分组码在同一上级平台内唯一 |
+| | `idx_platform_parent(parent_platform_id, parent_id)` | 按平台取子分组 |
+| `gb_parent_platform` | `uk_server_gb_id(server_gb_id)` | 一个上级编码只能配一次 |
+| `gb_device` | `uk_device_id(device_id)` | 设备唯一 |
+| `gb_device_channel` | `uk_device_channel(device_id, channel_id)` | 同一设备内节点唯一（`platform_id` 不参与唯一键） |
+| `gb_platform` | `uk_platform_id(platform_id)` | 黑名单一次一条 |
+
+分组码硬校验（`PlatformGroupServiceImpl.validateCode` / `validateHierarchy`）：
+
+1. 必须 20 位纯数字，第 11-13 位为 `215`（业务分组）或 `216`（虚拟组织）；
+2. **前 10 位必须等于本平台 `sip_domain`**，否则直接拒绝（前缀不对的节点上级会当其它域丢弃）；
+3. `215` 只能做根分组（已有子分组不能改成 215）、`216` 必须挂父，父链不允许成环。
+
+> ⚠️ `platform_id` **同名不同义**：`gb_platform.platform_id` / `gb_device_channel.platform_id` 是**下级平台 20 位国标码（varchar）**；`gb_platform_group.parent_platform_id` / `gb_platform_share.parent_platform_id` 是**上级平台主键（bigint，指向 `gb_parent_platform.id`）**。
+
+> 按方向划分的表职责、写入方与不落库部分见 2.1.1。
+
+### 2.1.1 上下级级联涉及的表（按方向全量清单）
+
+级联是**两个方向、两套表**：方向由「本平台在 SIP 信令里扮演什么角色」决定，与 Java 包路径无关。
+
+| 方向 | 本平台角色 | 涉及的表 | 一句话 |
+|---|---|---|---|
+| **下级方向**（把下级接进来） | 上级（收注册、收目录） | `gb_local_config`、`gb_platform`、`gb_device`、`gb_device_channel`、`gb_ptz_preset`/`gb_ptz_cruise`/`gb_ptz_cruise_point`、`gb_device_alarm`、`gb_mobile_position` | 下级平台/设备注册上来，本平台落库并维护身份、在线状态、目录、报警、位置 |
+| **上级方向**（把自己联上去） | 下级（发注册、推目录） | `gb_parent_platform`、`gb_platform_group`、`gb_platform_share`（+ 只读引用 `gb_device_channel`/`gb_device`） | 本平台向已配置的上级注册，按「分组 + 挂载」把通道推上去 |
+
+`gb_local_config` 是唯一两个方向都要用的表（本平台 SIP 身份）。
+
+#### A. 下级方向（本平台作为上级，接收下级平台/设备接入）
+
+| 表 | 职责 | 关键字段 / 约束 | 写入方 |
+|---|---|---|---|
+| `gb_local_config` | 本平台国标身份与接入参数，**单行表** | `id=1`；`sip_id`/`sip_domain`/`sip_ip`/`sip_public_ip`/`sip_port`/`password`/`register_expires`/`catalog_page_size`…；字段为 NULL 表示沿用 yaml；`id/domain/ip/port` 属平台身份，改后需重启 | 启动时 `INSERT IGNORE` 默认身份 + 「国标平台 → 本平台配置」页面 |
+| `gb_platform` | **接入禁用名单（黑名单）**，不是平台登记簿 | `platform_id varchar(20)`（下级平台国标码）、`enabled`（0 禁用 / 1 放行）、`uk_platform_id` | `RegisterRequestProcessor` 注册时 `isBlocked(deviceId)` 命中即拒绝；管理页维护 |
+| `gb_device` | 下级注册上来的 SIP 设备（IPC/NVR/下级平台） | `device_id` + `uk_device_id`；`status`（0 离线/1 在线/2 未注册）、`register_time`、`keepalive_time`、`last_catalog_sync_time` | Register / Keepalive / Catalog 处理器 |
+| `gb_device_channel` | 设备上报的目录节点，**一张表混存分组与通道** | `parental`（1 分组 / 0 通道）、`platform_id`（发起 Catalog 的注册方国标码）、`parent_id`（父节点国标码）、`tree_path`（`/设备码/父码/子码`，子树前缀查询）；`uk_device_channel(device_id, channel_id)` | `CatalogResponseMessageHandler`：按设备整体重建（`deleteByDeviceId` + 批量插入） |
+| `gb_ptz_preset` / `gb_ptz_cruise` / `gb_ptz_cruise_point` | 通道预置位、巡航路线、巡航点 | `channel_db_id` → `gb_device_channel.id`；`uk_channel_preset`、`uk_channel_cruise`、`uk_cruise_preset` | 云台操作接口 |
+| `gb_device_alarm` | 下级上报的报警，先落库再转发 | `device_id`/`channel_id`/`alarm_time`/`alarm_type`/`handle_status`（0 未处理…3 误报） | `AlarmPersistenceListener` 落库、`AlarmEventListener` 再按 `Alarm` 订阅转发 |
+| `gb_mobile_position` | 移动设备 GPS 轨迹 | `position_time`/`longitude`/`latitude`/`speed`/`direction`；`idx_device_time` | `PositionPersistenceListener` 落库、`PositionEventListener` 再按 `MobilePosition` 订阅转发 |
+
+#### B. 上级方向（本平台作为下级，向已配置的上级注册并推目录）
+
+| 表 | 职责 | 关键字段 / 约束 | 写入方 |
+|---|---|---|---|
+| `gb_parent_platform` | 上级平台配置 | `server_gb_id` + `uk_server_gb_id`、`server_gb_domain`/`server_ip`/`server_port`/`username`/`password`/`expires`/`keep_timeout`/`transport`/`character_set`/`catalog_group`/`enabled`/`status` | 「上级平台」页面维护；`NotifyFanoutSupport` 按 `server_gb_id + enabled=1` 反查目标/订阅方平台配置（禁用即不再向其推送） |
+| `gb_platform_group` | 推送给上级的分组树（可多平台各一套树） | `code`（20 位国标码）、`parent_platform_id`（→ `gb_parent_platform.id`）、`parent_id`（→ 本表 `id`，合法值为 0 表根）；`uk_platform_code(parent_platform_id, code)`、`idx_platform_parent` | 「推送目录」分组维护（`PlatformGroupServiceImpl`） |
+| `gb_platform_share` | 通道挂载关系：哪条通道挂在哪个上级的哪个分组下 | 业务键 `parent_platform_id` + `device_id` + `channel_id`（经 `group_id` 落在分组下）；`exposed_code`（对上级暴露码）；`uk_platform_channel`、`uk_platform_exposed_code(parent_platform_id, exposed_code)`、`idx_platform_group` | 挂载/卸载接口（`CatalogShareServiceImpl`） |
+
+分组码校验（20 位纯数字、第 11-13 位 215/216、前 10 位必须是本平台域、215 只能做根 / 216 必须挂父 / 防环）见 2.1。
+
+**通道本体不复制、设备不推送**：`gb_platform_share` 只存 `device_id`/`channel_id`/`exposed_code`，报文里的名称、厂商、型号、归属、IP 在发送时实时从 `gb_device_channel` + `gb_device` 回填（`fillChannelMeta` / `fillChannelMetaBatch`）。`gb_device` 本身不是目录节点，不参与推送。
+
+#### C. 不落库的部分
+
+- **订阅会话**：上级发来的 `SUBSCRIBE`（Catalog / Alarm / MobilePosition）只登记在 `SubscribeHolder` 的内存 `ConcurrentHashMap<(platformId:cmdType)>` 里，**不落库、也不写 Redis**；进程重启即清空，靠上级按 SIP 重传机制重新订阅（GB28181 默许行为）。
+- **设备/平台在线状态**：`gb_device.status`、`gb_parent_platform.status` 落库，但 SIP 注册会话与心跳超时判定在内存/定时任务侧完成。
+
+#### D. 容易误认为属于级联、实际无关的表
+
+| 表 | 为什么无关 |
+|---|---|
+| `gb_record_file`、`gb_record_plan`、`gb_record_plan_period`、`gb_view_record` | 云端录像 / 录像计划 / 观看记录，是本平台自己的存储与统计；上级查录像时 `RecordInfoQueryMessageHandler` 只把 Query 原样转发给设备，**不落库、也不读这几张表** |
+| `media_server`、`stream_proxy`、`stream_push`、`stream_push_client` | ZLM 节点与流代理/推流配置，属媒体面；仅点播（INVITE）链路间接用到，不参与目录级联 |
 
 ### 2.2 三条推送链路
 
@@ -110,13 +185,13 @@
 |---|---|---|---|
 | 挂载通道 `addShares` | 插入 share 行 | 分组链 `ADD`（根 → 叶，每次都补）→ 通道 `ADD` + 全量兜底 | ✅ 已实现 |
 | 卸载通道 `removeShare` | **先取节点** → 删 share 行 | 逐条 `Event=DEL` + 全量兜底 | ✅ 已实现 |
-| 清空分组 `clearShares` | **先取节点** → 删该组 share | 组内通道逐条 `Event=DEL` | ✅ 已实现 |
-| 清空平台 `clearAllSharesByPlatform` | **先取节点** → 删全部 share | 逐条 `Event=DEL` | ✅ 已实现 |
+| 清空分组 `clearShares` | **先取节点** → 删该组 share | 组内通道逐条 `Event=DEL` + 全量兜底 | ✅ 已实现 |
+| 清空平台 `clearAllSharesByPlatform` | **先取节点** → 删全部 share | 逐条 `Event=DEL` + 全量兜底 | ✅ 已实现 |
 | 删分组 `deleteGroup` | **先取节点** → 删组 + 联动删组内 share | 通道逐条 `DEL` 后再发分组 `DEL`（空分组也发） | ✅ 已实现 |
 | 新建分组 `createGroup` | 插入分组行 | 不发（空分组不推是对的） | — 无需处理 |
 | 改名 `updateGroup`（只名称变） | 更新分组行 | 一包 `Event=UPDATE`（`ParentID` 不变）+ 全量兜底 | ✅ 已实现 |
 | 换父 `updateGroup`（`parentId` 变） | 更新分组行 | `DEL` 旧位置 → 新父链 `ADD`（根 → 叶，含自身）+ 全量兜底 | ✅ 已实现 |
-| 改码 `updateGroup`（`code` 变） | 更新分组行 | 旧子树 `DEL`（通道 → 子分组深→浅 → 自身）→ 新父链 `ADD` → 新子树 `ADD` | ✅ 已实现 |
+| 改码 `updateGroup`（`code` 变） | 更新分组行 | 旧子树 `DEL`（通道 → 子分组深→浅 → 自身）→ 新父链 `ADD` → 新子树 `ADD` + 全量兜底 | ✅ 已实现 |
 
 **改代码时必须守住的 7 条约束：**
 
@@ -142,7 +217,7 @@
 | `CivilCode` | 分组和通道**一律写 `parentCode`**（= 本条 Item 的 ParentID） | `PlatformCatalogXml.appendItem` |
 | 空值字段 | 值为 null/空白时**整段省略**（空标签会被上级当非法节点） | `PlatformCatalogXml.appendTag` |
 | `PTZType` | 写在 `<Info>` 内；取不到或为 0 时按 **1**（球机）兜底 | `PlatformCatalogXml.appendPtzInfo` |
-| 厂商/型号/归属/IP | 通道为空时从 `gb_device` 按 `deviceId` 回填，有值才写 | `CatalogShareServiceImpl.fillChannelMeta` |
+| 厂商/型号/归属/IP | 通道为空时从 `gb_device` 按 `deviceId` 回填，有值才写（全量推送走前者，事件推送走后者） | `CatalogShareServiceImpl.fillChannelMeta` / `fillChannelMetaBatch` |
 | 分组 `Manufacturer/Model/Owner` | 固定 `Solo` / `Group` / `Solo` | `PlatformCatalogXml.appendItem` |
 | `BusinessGroupID` | 仅 216 输出，取沿父链上溯的第一个 215 编码 | `CatalogShareServiceImpl.findBusinessGroupCode` |
 
