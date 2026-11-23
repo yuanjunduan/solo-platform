@@ -74,6 +74,10 @@ public class CascadeSendSession {
     @Schema(description = "会话状态 WAIT_ACK/SENDING/STOPPED")
     private String status;
 
+    @Schema(description = "回给上级的 SDP 是否由本平台重新构造。恒为 true：上级 SDP 只取 c=/m=/y=，"
+            + "回复地址一律用本平台节点地址（架构约束 C21a，回归断言用）")
+    private Boolean sdpRewritten;
+
     @Schema(description = "创建时间")
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
     private LocalDateTime createTime;

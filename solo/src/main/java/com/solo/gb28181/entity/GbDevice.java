@@ -84,6 +84,13 @@ public class GbDevice implements Serializable {
     @Schema(description = "数据来源（1=系统新增/2=表格导入/3=设备注册）")
     private Integer source;
 
+    @Schema(description = "所属域（LOCAL=本地 / SUBORDINATE=下级平台 / REMOTE=第三方资源平台）")
+    private String domain;
+
+    @Schema(description = "所属本地组织 gb_org.id（仅 LOCAL 域有值；下级域的组织来自目录 215/216）")
+    @JsonSerialize(using = ToStringSerializer.class)
+    private Long orgId;
+
     @Schema(description = "最近注册时间")
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
     private LocalDateTime registerTime;

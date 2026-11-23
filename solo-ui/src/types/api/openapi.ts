@@ -90,6 +90,48 @@ export interface OpenApiLog {
   createTime?: string
 }
 
+/* ========== 资源事件订阅（M3 事件流） ========== */
+
+/** 一份对外订阅：topic + 两级 scope + 服务端游标 */
+export interface EventSubscription {
+  id: string
+  appId: string
+  /** 应用标识快照，应用换 Key 后仍能对账 */
+  appKey: string
+  appName?: string
+  topic: string
+  /** scope 一级：来源平台；空 = 全部平台 */
+  platformId?: string | null
+  platformName?: string | null
+  /** scope 二级：组织子树前缀（如 /1/5/）；空 = 整租户 */
+  orgPath?: string | null
+  /** 服务端已发出的最大游标，即 SSE 的 Last-Event-ID */
+  lastEventId: string
+  /** 1 启用 0 停用 */
+  status: number
+  remark?: string | null
+  createTime?: string
+  updateTime?: string
+}
+
+export interface EventSubscriptionPageRequest {
+  page?: number
+  pageSize?: number
+  /** appKey 模糊匹配 */
+  appKey?: string
+  status?: number
+}
+
+export interface EventSubscriptionSaveRequest {
+  id: string
+  /** 传 null 表示放宽到"全部平台" */
+  platformId?: string | null
+  /** 传 null 表示放宽到"整租户" */
+  orgPath?: string | null
+  status?: number
+  remark?: string | null
+}
+
 export interface OpenApiLogPageRequest {
   page?: number
   pageSize?: number

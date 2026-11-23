@@ -165,6 +165,9 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
         if (existing != null) {
             throw new ServiceException("用户名已存在");
         }
+        // 已逻辑删除的同名记录仍占着 uk_username（唯一键不含 deleted），先物理清墓碑再插入，
+        // 否则复用用户名会撞唯一键、被兜底成 500「系统异常，请联系管理员」。
+        baseMapper.purgeDeletedByUsername(request.getUsername());
         // 未分配角色的账号无法登录，创建时必须至少选择一个角色
         List<Long> roleIds = request.getRoleIds();
         if (roleIds == null || roleIds.isEmpty()) {

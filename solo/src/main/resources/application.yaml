@@ -27,7 +27,132 @@ mybatis-plus:
 #  直连部署留空；nginx 与应用同机填 127.0.0.1,::1；异机填代理实际网段。
 # ============================================================
 openapi:
-  trusted-proxies: 
+  # 容器/反向代理部署时用环境变量 OPENAPI_TRUSTED_PROXIES=127.0.0.1,::1（或代理网段）
+  trusted-proxies: ${OPENAPI_TRUSTED_PROXIES:}
+
+# ============================================================
+#  审计（audit_log）
+#  审计是旁路：异步、可丢、可关。关闭后 record() 直接返回，不产生任何成本；
+#  打开时写失败只打 warn，绝不让业务事务回滚（对照 staging 主链路的失败语义）。
+# ============================================================
+audit:
+  enabled: true
+
+# ============================================================
+#  资源只读收口第三层（3.6.5 持久层拦截）
+#  off    : 全关
+#  warn   : 命中违规 SQL 只告警并计数（默认。M1 的硬删除接口仍在用，
+#           直接抛错会让"删除组织"这类按钮立刻 500）
+#  strict : 直接抛异常；开发/CI 用它，让越权写法在测试里就炸掉
+# ============================================================
+resource:
+  write-guard:
+    mode: warn
+
+# ============================================================
+#  资源同步（M2a 三段会话 + M2b 运行保障）
+#  stall-timeout-ms  连续多久没有新批次即判超时（按"无进展"，不按总时长）
+#  cooldown-extra-ms 失败后冷却窗口的额外毫秒：冷却 = stall + extra
+#  g2.min-local-rows G2 的规模下限，不超过它不做比例保护
+#  staging.page-size 暂存批量写入的一页行数（PG 参数上限 65535，22 列 × 500 行很安全）
+#  tree.max-depth    建树循环轮数上限，超了说明目录里有环
+#  delete.mode       mark=只标 STALE（默认）；real=标 REMOVED（软删，等 M4 共享联动后可切）
+#  residue.retention-hours 失败轮现场保留时长，超期的 staging 由周期任务回收（3.13.4）
+#  residue.startup-clean   启动后是否清一次上次运行遗留（多实例部署关掉）
+#  org-retry.*       组织缺失设备延迟重试：防抖秒数 / 强制上限分钟（3.8.2）
+#  snapshot.*        原始报文快照（C 档，默认关闭；开启后只留最近 N 轮）
+# ============================================================
+sync:
+  stall-timeout-ms: 75000
+  cooldown-extra-ms: 10000
+  g2:
+    min-local-rows: 1000
+  staging:
+    page-size: 500
+  tree:
+    max-depth: 16
+  delete:
+    mode: mark
+  residue:
+    retention-hours: 24
+    # 启动后延迟 2 分钟清一次上次运行的遗留（被 kill / 断电来不及收尾的暂存）。
+    # 单实例保持 true；多实例滚动重启请设 false，否则会清掉对端正在收的批次
+    startup-clean: true
+  org-retry:
+    debounce-seconds: 30
+    max-wait-minutes: 10
+  snapshot:
+    enabled: false
+    keep-rounds: 2
+    queue-size: 1024
+
+# ============================================================
+#  资源变更事件流（M3 / 3.11.7 / 6.4 SSE）
+#  detail-max        单轮变化数超过它就降级成 REFRESH_ALL（5 万条同步只发 1 条）
+#  retention-days    事件保留天数，超期由每小时任务回收；早于窗口的游标一律 409
+#  batch-size        单次从库里拉多少条推给一个连接（背压第一道）
+#  queue-size        单连接落后超过它就在流里插一条 lagged 提示（不跳事件）
+#  idle-poll-ms      连接空闲时最多睡这么久查一次库（进程内信号可能早于事务提交）
+#  stream-timeout-ms 单连接存活上限，到点由客户端带 Last-Event-ID 重连
+#  heartbeat-ms      SSE 注释帧间隔，让网关知道连接还活着
+#  max-connections   单实例并发订阅连接上限，到达后返回 429
+# ============================================================
+event:
+  detail-max: 500
+  retention-days: 7
+  retention-enabled: true
+  batch-size: 200
+  queue-size: 1000
+  idle-poll-ms: 2000
+  stream-timeout-ms: 1800000
+  heartbeat-ms: 15000
+  max-connections: 64
+
+# ============================================================
+#  上级共享推送（M4 / 3.9 / 6.5）
+#  detail-max        单轮待推超过它就合并成一条 REFRESH（C18），不逐条循环
+#  retry-max         单条事件重试上限，超过置 DEAD 等人工处理
+#  retry-backoff-ms  指数退避基数：第 n 次失败等 base*2^(n-1)，封顶 10 分钟
+#  batch-size        单平台一页取多少条投递（一个上级的积压不拖住另一个）
+#  max-hop           最大级联跳数（C20 第三道），默认 3
+#  interval-ms       调度器扫描间隔；无待推事件时几乎零成本
+#  platform-lock-ttl-ms 平台级互斥租约（C24，多实例必须靠 DB 而不是进程内锁）
+#  reconcile-*       对账：只补差异不做全量重推
+#  retention-days    已投递事件保留天数；回收时保留平台内最大 seq，号段不回退
+# ============================================================
+publish:
+  detail-max: 500
+  retry-max: 5
+  retry-backoff-ms: 30000
+  batch-size: 100
+  max-hop: 3
+  interval-ms: 30000
+  platform-lock-ttl-ms: 300000
+  reconcile-enabled: true
+  reconcile-interval-ms: 3600000
+  retention-days: 7
+
+# ============================================================
+#  健康探针（M7）：/api/health 存活、/api/health/ready 就绪（免登录）
+#  ready-cache-ms        就绪结果缓存毫秒，避免秒级探针把连接池探成瓶颈；0 = 不缓存
+#  ready-require-media   就绪判定是否要求至少一个媒体节点在线。默认 false：
+#                        ZLM 抖动时管理 API / 目录同步 / SSE 仍可用，不该把整个实例摘掉；
+#                        媒体面故障由节点健康巡检与运行自检页呈现
+#  db-timeout-seconds    JDBC isValid 超时
+# ============================================================
+health:
+  ready-cache-ms: 5000
+  ready-require-media: false
+  db-timeout-seconds: 2
+
+# ============================================================
+#  性能探测（M7，6.7「慢查询治理」）
+#  slow-sql-ms           超过该耗时记一条慢 SQL（只记 Mapper 方法 id 与耗时，不记原文）；<=0 关闭
+#  slow-sql-warn-per-minute  每分钟最多打多少条慢 SQL WARN，超出只计数，由 5 分钟汇总补整体
+# ============================================================
+perf:
+  slow-sql-ms: 1000
+  slow-sql-warn-per-minute: 20
 
 logging:
   # 日志格式、滚动与文件分流统一在 logback-spring.xml 里定义（本文件的 logging.file/pattern 已不生效）：

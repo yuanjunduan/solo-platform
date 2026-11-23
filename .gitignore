@@ -69,3 +69,5 @@ _backup_*.json
 !_backup_solo_db_20261122.json
 # 一次性升级脚本：已部署实例执行完即弃，不作为演进手段（保留本地，不入库）
 sql/alter_*.sql
+# M7 验收脚本的临时栈 env（含随机库口令，不入库）
+.verify-m7.env

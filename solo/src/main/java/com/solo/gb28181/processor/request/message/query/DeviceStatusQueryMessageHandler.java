@@ -1,14 +1,15 @@
 package com.solo.gb28181.processor.request.message.query;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.solo.domain.resource.model.ResChannel;
+import com.solo.domain.resource.model.SourceType;
+import com.solo.domain.share.service.ShareCatalogService;
 import com.solo.gb28181.config.Gb28181Properties;
 import com.solo.gb28181.entity.GbDevice;
 import com.solo.gb28181.entity.GbDeviceChannel;
 import com.solo.gb28181.entity.GbParentPlatform;
-import com.solo.gb28181.entity.GbPlatformShare;
 import com.solo.gb28181.mapper.GbDeviceChannelMapper;
 import com.solo.gb28181.mapper.GbDeviceMapper;
-import com.solo.gb28181.mapper.GbPlatformShareMapper;
 import com.solo.gb28181.processor.SipRequestProcessorBase;
 import com.solo.gb28181.processor.request.message.MessageHandler;
 import com.solo.gb28181.transmit.cmd.PlatformCommander;
@@ -23,6 +24,12 @@ import javax.sip.RequestEvent;
 import javax.sip.message.Response;
 
 
+/**
+ * 上级平台的 DeviceStatus 查询（设备 / 平台 / 通道三个维度）。
+ *
+ * <p>通道维度走 M4 出站三表反查（{@link ShareCatalogService#resolveForPlay}）：
+ * 撤销后、以及 DELETE 推送成功前，未共享的通道不能向上级报告状态（C12 / C27）。</p>
+ */
 @Slf4j
 @Component
 @RequiredArgsConstructor
@@ -32,7 +39,7 @@ public class DeviceStatusQueryMessageHandler extends SipRequestProcessorBase imp
 
     private final GbDeviceMapper deviceMapper;
     private final GbDeviceChannelMapper channelMapper;
-    private final GbPlatformShareMapper shareMapper;
+    private final ShareCatalogService shareCatalogService;
     private final PlatformCommander platformCommander;
     private final Gb28181Properties properties;
 
@@ -87,12 +94,12 @@ public class DeviceStatusQueryMessageHandler extends SipRequestProcessorBase imp
             return;
         }
 
-        // 3) 通道维度：国标 DeviceStatus 按通道，上级常传通道国标码
-        GbDeviceChannel channel = resolveChannel(platform, deviceId);
-        if (channel != null) {
+        // 3) 通道维度：国标 DeviceStatus 按通道，上级常传通道国标码（可能是暴露码）
+        String channelStatus = resolveChannelStatus(platform, deviceId);
+        if (channelStatus != null) {
             log.info("{} 通道命中下发 platform={} SN={} channelId={} status={}",
-                    LOG_TAG, platform.getServerGbId(), sn, deviceId, channel.getStatus());
-            platformCommander.sendDeviceStatusResponse(platform, sn, deviceId, channel.getStatus());
+                    LOG_TAG, platform.getServerGbId(), sn, deviceId, channelStatus);
+            platformCommander.sendDeviceStatusResponse(platform, sn, deviceId, channelStatus);
             return;
         }
 
@@ -101,41 +108,31 @@ public class DeviceStatusQueryMessageHandler extends SipRequestProcessorBase imp
         platformCommander.sendDeviceStatusError(platform, deviceId, sn, "设备/通道未在本平台登记");
     }
 
-    private GbDeviceChannel resolveChannel(GbParentPlatform platform, String deviceId) {
+    /**
+     * 反查共享通道的在线状态：本地通道以 SIP 侧通道表为准（{@code res_channel.online_status}
+     * 只是镜像，未必实时），入站通道没有本地通道行，只能信同步写入的 online_status。
+     *
+     * @return ON / OFF；未共享或不存在返回 null（调用方回"未登记"）
+     */
+    private String resolveChannelStatus(GbParentPlatform platform, String deviceId) {
         if (platform.getId() == null) {
             return null;
         }
-        Long parentPlatformId = platform.getId();
-
-        // 1) channel_id 直查 + 共享校验
-        GbDeviceChannel channel = channelMapper.selectOne(
-                new LambdaQueryWrapper<GbDeviceChannel>().eq(GbDeviceChannel::getChannelId, deviceId));
-        if (channel != null && channel.getId() != null) {
-            GbPlatformShare share = shareMapper.selectOne(new LambdaQueryWrapper<GbPlatformShare>()
-                    .eq(GbPlatformShare::getParentPlatformId, parentPlatformId)
-                    .eq(GbPlatformShare::getDeviceId, channel.getDeviceId())
-                    .eq(GbPlatformShare::getChannelId, channel.getChannelId())
-                    .last("LIMIT 1"));
-            if (share != null) {
-                return channel;
-            }
-        }
-
-        // 2) exposed_code 反查（撞码场景：上级拿到的是暴露码而非原始 channel_id）
-        GbPlatformShare share = shareMapper.selectOne(new LambdaQueryWrapper<GbPlatformShare>()
-                .eq(GbPlatformShare::getParentPlatformId, parentPlatformId)
-                .eq(GbPlatformShare::getExposedCode, deviceId)
-                .last("LIMIT 1"));
-        if (share == null) {
+        ShareCatalogService.ExposedChannel resolved =
+                shareCatalogService.resolveForPlay(platform.getId(), deviceId);
+        if (resolved == null) {
             return null;
         }
-        return resolveShareChannel(share);
-    }
-
-    /** 按业务键 (device_id, channel_id) 定位 share 指向的当前通道 */
-    private GbDeviceChannel resolveShareChannel(GbPlatformShare share) {
-        return channelMapper.selectOne(new LambdaQueryWrapper<GbDeviceChannel>()
-                .eq(GbDeviceChannel::getDeviceId, share.getDeviceId())
-                .eq(GbDeviceChannel::getChannelId, share.getChannelId()));
+        ResChannel channel = resolved.channel();
+        if (SourceType.NATIVE.equals(channel.getSourceType())) {
+            if (resolved.device() == null || resolved.device().getCode() == null) {
+                return null;
+            }
+            GbDeviceChannel row = channelMapper.selectOne(new LambdaQueryWrapper<GbDeviceChannel>()
+                    .eq(GbDeviceChannel::getDeviceId, resolved.device().getCode())
+                    .eq(GbDeviceChannel::getChannelId, channel.getCode()));
+            return row == null ? null : row.getStatus();
+        }
+        return channel.getOnlineStatus() == null ? "OFF" : channel.getOnlineStatus();
     }
 }

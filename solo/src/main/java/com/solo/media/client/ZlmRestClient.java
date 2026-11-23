@@ -88,7 +88,12 @@ public class ZlmRestClient {
     }
 
 
-    public List<JsonNode> getMediaList(MediaServer server) {
+    /**
+     * 同 {@link #getMediaList}，但<b>节点问不到时返回 {@code null}</b>，而不是空列表。
+     * <p>调用方必须能区分"节点上真没有这路流"（可以判死）和"压根没问到节点"（必须放行）——
+     * 后者若按空列表处理，一次网络抖动就会把所有会话当成僵尸清掉。</p>
+     */
+    public List<JsonNode> getMediaListOrNull(MediaServer server) {
         try {
             JsonNode resp = post(server, "getMediaList", new LinkedHashMap<>());
             JsonNode data = resp.path("data");
@@ -97,11 +102,17 @@ public class ZlmRestClient {
             data.forEach(out::add);
             return out;
         } catch (ServiceException e) {
-            // 对账每 30s 一次：warn 只留一行，堆栈降到 debug，避免一个配错的节点刷屏
+            // 巡检每 10s 一次：warn 只留一行，堆栈降到 debug，避免一个配错的节点刷屏
             log.warn("[流媒体流列表] 查询失败 节点:{} 错误:{}", server.getServerId(), e.getMessage());
             log.debug("[流媒体流列表] 查询失败详情 节点:{}", server.getServerId(), e);
-            return List.of();
+            return null;
         }
+    }
+
+
+    public List<JsonNode> getMediaList(MediaServer server) {
+        List<JsonNode> list = getMediaListOrNull(server);
+        return list == null ? List.of() : list;
     }
 
 

@@ -43,6 +43,29 @@
         </div>
 
         <div class="flex items-center gap-3">
+          <div class="flex w-20 shrink-0 items-center gap-1">
+            <Label class="whitespace-nowrap text-xs text-muted-foreground">资源域</Label>
+            <span
+              class="text-muted-foreground/60"
+              title="本地=本地组织维护的设备；远程=第三方资源平台共享目录（本期仅目录可见，不可点播）。下级域由 SIP 目录同步自动判定，不手工选择。"
+            >
+              <IconInfoCircle class="size-3.5" />
+            </span>
+          </div>
+          <div class="flex-1">
+            <Select v-model="form.domain" :disabled="!creating">
+              <SelectTrigger class="h-8 w-full text-xs">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="LOCAL">本地（本地组织维护）</SelectItem>
+                <SelectItem value="REMOTE">远程（第三方资源平台共享）</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
+
+        <div class="flex items-center gap-3">
           <Label class="w-20 shrink-0 whitespace-nowrap text-xs text-muted-foreground">
             设备名称<span class="ml-0.5 text-destructive">*</span>
           </Label>
@@ -371,6 +394,8 @@ const emit = defineEmits<{
 type FormState = {
   id?: string
   deviceId: string
+  /** 资源域：LOCAL / REMOTE（SUBORDINATE 由 SIP 同步自动判定，不手工选） */
+  domain: string
   name: string
   manufacturer: string
   model: string
@@ -385,6 +410,7 @@ type FormState = {
 const buildForm = (): FormState => ({
   id: props.device?.id,
   deviceId: props.device?.deviceId ?? '',
+  domain: props.device?.domain ?? 'LOCAL',
   name: props.device?.name ?? '',
   manufacturer: props.device?.manufacturer ?? '',
   model: props.device?.model ?? '',
@@ -457,7 +483,12 @@ const onSave = async () => {
   try {
     if (props.creating) {
       await saveGbDeviceApi({
-        device: { ...form, deviceId: form.deviceId.trim(), name: form.name.trim() },
+        device: {
+          ...form,
+          deviceId: form.deviceId.trim(),
+          name: form.name.trim(),
+          domain: form.domain as GbDevice['domain'],
+        },
         channels: [],
       })
       toast.success('设备创建成功')

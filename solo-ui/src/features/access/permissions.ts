@@ -106,6 +106,13 @@ export const PERM = {
 
   // ===== 国标管理 gb28181 =====
   GB: 'gb28181',
+  // 本地组织树（资源归属）
+  GB_ORG: 'gb28181:org',
+  GB_ORG_LIST: 'gb28181:org:list',
+  GB_ORG_ADD: 'gb28181:org:add',
+  GB_ORG_EDIT: 'gb28181:org:edit',
+  GB_ORG_DELETE: 'gb28181:org:delete',
+  GB_ORG_ASSIGN: 'gb28181:org:assign',
   // 设备
   GB_DEVICE: 'gb28181:device',
   GB_DEVICE_LIST: 'gb28181:device:list',
@@ -163,6 +170,55 @@ export const PERM = {
   GB_RECORD_PLAN_EDIT: 'gb28181:record:plan:edit',
   GB_RECORD_PLAN_DELETE: 'gb28181:record:plan:delete',
 
+  // ===== 资源中心 res（统一资源模型 M1/M2）=====
+  RES: 'res',
+  // 组织
+  RES_ORG: 'res:org',
+  RES_ORG_LIST: 'res:org:list',
+  RES_ORG_ADD: 'res:org:add',
+  RES_ORG_EDIT: 'res:org:edit',
+  RES_ORG_DELETE: 'res:org:delete',
+  // 设备
+  RES_DEVICE: 'res:device',
+  RES_DEVICE_LIST: 'res:device:list',
+  RES_DEVICE_ADD: 'res:device:add',
+  RES_DEVICE_EDIT: 'res:device:edit',
+  RES_DEVICE_DELETE: 'res:device:delete',
+  // 通道
+  RES_CHANNEL: 'res:channel',
+  RES_CHANNEL_LIST: 'res:channel:list',
+  RES_CHANNEL_ADD: 'res:channel:add',
+  RES_CHANNEL_EDIT: 'res:channel:edit',
+  RES_CHANNEL_DELETE: 'res:channel:delete',
+  /** 同源绑定 / 解除（改本地侧 canonical_id，不改入站镜像） */
+  RES_CHANNEL_BIND: 'res:channel:bind',
+  /** 实时点播（M6 统一入口，本地 + 入站） */
+  RES_CHANNEL_PLAY: 'res:channel:play',
+  /** 录像回放（入站只转发不落存储） */
+  RES_CHANNEL_PLAYBACK: 'res:channel:playback',
+  /** 云台与预置位 */
+  RES_CHANNEL_PTZ: 'res:channel:ptz',
+  /** 导出通道（CSV） */
+  RES_CHANNEL_EXPORT: 'res:channel:export',
+  // 播放记录（M6）
+  RES_PLAY_RECORD: 'res:play-record',
+  RES_PLAY_RECORD_LIST: 'res:play-record:list',
+  RES_PLAY_RECORD_EXPORT: 'res:play-record:export',
+  // 运行自检（M6 可观测）
+  RES_OBSERVABILITY: 'res:observability',
+  RES_OBSERVABILITY_VIEW: 'res:observability:view',
+
+  // ===== 平台接入 platform（M2a 入站同步）=====
+  PLATFORM: 'platform',
+  PLATFORM_LIST: 'platform:list',
+  PLATFORM_ADD: 'platform:add',
+  PLATFORM_EDIT: 'platform:edit',
+  PLATFORM_DELETE: 'platform:delete',
+  // 同步中心（与平台列表同属平台接入模块）
+  SYNC: 'sync:list',
+  SYNC_TRIGGER: 'sync:trigger',
+  SYNC_CANCEL: 'sync:cancel',
+
   // ===== ONVIF 管理 onvif =====
   ONVIF: 'onvif',
   // 设备
@@ -183,6 +239,25 @@ export const PERM = {
   OPENAPI_LOG: 'openapi:log',
   OPENAPI_LOG_LIST: 'openapi:log:list',
   OPENAPI_LOG_EXPORT: 'openapi:log:export',
+  // 资源事件订阅（M3 事件流）
+  OPENAPI_SUB: 'openapi:subscription',
+  OPENAPI_SUB_LIST: 'openapi:subscription:list',
+  OPENAPI_SUB_EDIT: 'openapi:subscription:edit',
+
+  // ===== 资源共享 share（M4 上级共享）=====
+  SHARE: 'share',
+  // 共享编排
+  SHARE_COMPOSE: 'share:compose',
+  SHARE_COMPOSE_LIST: 'share:compose:list',
+  SHARE_COMPOSE_EDIT: 'share:compose:edit',
+  // 共享总览
+  SHARE_OVERVIEW: 'share:overview',
+  SHARE_OVERVIEW_LIST: 'share:overview:list',
+  SHARE_OVERVIEW_EDIT: 'share:overview:edit',
+  // 推送记录
+  SHARE_PUBLISH: 'share:publish',
+  SHARE_PUBLISH_LIST: 'share:publish:list',
+  SHARE_PUBLISH_RETRY: 'share:publish:retry',
 } as const
 
 export type PermCode = (typeof PERM)[keyof typeof PERM]

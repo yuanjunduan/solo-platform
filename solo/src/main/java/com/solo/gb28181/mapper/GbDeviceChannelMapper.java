@@ -3,6 +3,7 @@ package com.solo.gb28181.mapper;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.solo.gb28181.entity.GbDeviceChannel;
+import com.solo.gb28181.response.GbCatalogSourceVO;
 import com.solo.gb28181.response.GbChannelStatusCountVO;
 import com.solo.gb28181.response.GbChannelTreeNodeVO;
 import com.solo.gb28181.response.GbDeviceChannelResponse;
@@ -66,17 +67,74 @@ public interface GbDeviceChannelMapper extends BaseMapper<GbDeviceChannel> {
                                                     @Param("keyword") String keyword,
                                                     @Param("status") String status);
 
-    /** 状态统计；platformId 非空时只统计该下级平台上报的目录 */
+    /**
+     * 状态统计；deviceId / platformId 非空时只统计该来源端点的目录（二者当前同值，优先用语义正确的 deviceId）。
+     *
+     * <p>domain 非空时只统计该资源域（域只落在 gb_device，通道通过 device_id 继承）；
+     * orgIds 非空时按"有效组织"（通道自身 org_id 优先，否则继承设备）统计，并锁定本地域；
+     * 集合为空则恒假；unassigned=true 表示只统计未归属。三个组织参数都不传时与旧行为一致。</p>
+     */
     @Select("""
             <script>
             SELECT parental, status, COUNT(*) AS count FROM gb_device_channel
             <where>
+                <if test="deviceId != null and deviceId != ''">device_id = #{deviceId}</if>
                 <if test="platformId != null and platformId != ''">platform_id = #{platformId}</if>
+                <if test="domain != null and domain != ''">
+                    AND device_id IN (SELECT d.device_id FROM gb_device d WHERE d.domain = #{domain})
+                </if>
+                <if test="orgIds != null or unassigned">
+                    AND device_id IN (SELECT d.device_id FROM gb_device d WHERE d.domain = 'LOCAL')
+                </if>
+                <if test="unassigned">
+                    AND COALESCE(org_id, (SELECT d.org_id FROM gb_device d
+                        WHERE d.device_id = gb_device_channel.device_id)) IS NULL
+                </if>
+                <if test="orgIds != null">
+                    <choose>
+                        <when test="orgIds.isEmpty()">AND 1 = 0</when>
+                        <otherwise>
+                            AND COALESCE(org_id, (SELECT d.org_id FROM gb_device d
+                                WHERE d.device_id = gb_device_channel.device_id)) IN
+                            <foreach collection="orgIds" item="id" open="(" separator="," close=")">#{id}</foreach>
+                        </otherwise>
+                    </choose>
+                </if>
+                <if test="pathPrefix != null and pathPrefix != ''">
+                    AND tree_path LIKE CONCAT(#{pathPrefix}, '/%')
+                </if>
             </where>
             GROUP BY parental, status
             </script>
             """)
-    List<GbChannelStatusCountVO> selectStatusCount(@Param("platformId") String platformId);
+    List<GbChannelStatusCountVO> selectStatusCount(@Param("deviceId") String deviceId,
+                                                   @Param("platformId") String platformId,
+                                                   @Param("domain") String domain,
+                                                   @Param("orgIds") List<Long> orgIds,
+                                                   @Param("unassigned") boolean unassigned,
+                                                   @Param("pathPrefix") String pathPrefix);
+
+    /**
+     * 目录来源聚合：来源维度直接取自目录数据自身（group by device_id），
+     * 不依赖任何登记表；端点名称/在线态 left join gb_device 回填。
+     */
+    @Select("""
+            SELECT c.device_id AS deviceId,
+                   MAX(COALESCE(NULLIF(d.name, ''), NULLIF(d.report_name, ''), '')) AS name,
+                   MAX(CASE WHEN d.domain IS NULL THEN 'SUBORDINATE' ELSE d.domain END) AS domain,
+                   MAX(d.status) AS onlineStatus,
+                   MAX(d.last_catalog_sync_time) AS lastCatalogSyncTime,
+                   COUNT(*) AS itemCount,
+                   SUM(CASE WHEN COALESCE(c.parental, 0) = 1 THEN 1 ELSE 0 END) AS groupCount,
+                   SUM(CASE WHEN COALESCE(c.parental, 0) = 1 THEN 0 ELSE 1 END) AS channelCount,
+                   SUM(CASE WHEN COALESCE(c.parental, 0) = 1 THEN 0 WHEN c.status = 'ON' THEN 1 ELSE 0 END) AS onlineChannelCount,
+                   SUM(CASE WHEN COALESCE(c.parental, 0) = 1 THEN 0 WHEN c.status = 'OFF' THEN 1 ELSE 0 END) AS offlineChannelCount
+            FROM gb_device_channel c
+            LEFT JOIN gb_device d ON d.device_id = c.device_id
+            GROUP BY c.device_id
+            ORDER BY channelCount DESC, c.device_id
+            """)
+    List<GbCatalogSourceVO> selectCatalogSources();
 
     // 合并语义对齐 MySQL：后出现的非 null 上报值覆盖先出现的，null 不覆盖
     private static List<GbDeviceChannel> mergeDuplicates(List<GbDeviceChannel> channels) {

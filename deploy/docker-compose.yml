@@ -1,0 +1,117 @@
+# ============================================================================
+#  Solo 平台容器编排（M7 / S5）
+#
+#  默认拉起四件套：PostgreSQL + Redis + 后端(solo) + 控制台(solo-ui/nginx)。
+#  下面这些**不**在编排内，按现场情况单独部署，再用 .env 指过去：
+#    · ZLMediaKit：需要 host 网络与大量 RTP 端口，参考 zlm/docker-compose.yml
+#    · RustFS/S3  ：参考 rustfs/docker-compose.yml
+#    · 设备/上级平台：SIP 需能直连宿主机 5060/udp（NAT 环境配 SOLO_SIP_PUBLIC_IP）
+#
+#  用法：
+#    cp .env.example .env    # 改密码与 IP
+#    docker compose up -d --build
+#    curl -fsS http://127.0.0.1:${SOLO_HTTP_PORT:-8080}/api/health/ready
+# ============================================================================
+name: solo-platform
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-solo_db}
+      POSTGRES_USER: ${POSTGRES_USER:-solo}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?请在 .env 设置 POSTGRES_PASSWORD}
+      TZ: Asia/Shanghai
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # 仅数据目录为空时执行：PostgreSQL_solo_db.sql 会重建全部表，不可用于升级
+      - ../sql/PostgreSQL_solo_db.sql:/docker-entrypoint-initdb.d/10-solo.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-solo} -d ${POSTGRES_DB:-solo_db}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    # AOF 持久化：SSRC 池、nonce、节点负载都在 Redis 里，重启后要能续上
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  solo:
+    build:
+      context: ../solo
+      dockerfile: Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-pg}
+      # SIP 对外地址：必须是设备/上级平台可达的宿主机 IP，不能填容器内网 IP
+      SOLO_IP: ${SOLO_IP:?请在 .env 设置 SOLO_IP（宿主机对外 IP）}
+      SOLO_SIP_PUBLIC_IP: ${SOLO_SIP_PUBLIC_IP:-}
+      SOLO_SIP_PORT: ${SOLO_SIP_PORT:-5060}
+      SOLO_SIP_ID: ${SOLO_SIP_ID:?请在 .env 设置 SOLO_SIP_ID}
+      SOLO_SIP_DOMAIN: ${SOLO_SIP_DOMAIN:?请在 .env 设置 SOLO_SIP_DOMAIN}
+      SOLO_SIP_PASSWORD: ${SOLO_SIP_PASSWORD:?请在 .env 设置 SOLO_SIP_PASSWORD}
+      SOLO_DB_HOST: postgres
+      SOLO_DB_PORT: "5432"
+      SOLO_DB_NAME: ${POSTGRES_DB:-solo_db}
+      SOLO_DB_USER: ${POSTGRES_USER:-solo}
+      SOLO_DB_PASSWORD: ${POSTGRES_PASSWORD:?请在 .env 设置 POSTGRES_PASSWORD}
+      SOLO_REDIS_HOST: redis
+      SOLO_REDIS_PORT: "6379"
+      SOLO_REDIS_PASSWORD: ${SOLO_REDIS_PASSWORD:-}
+      # S3 与 ZLM 不在本编排内：填宿主或独立机器地址（同机部署可用 host.docker.internal）
+      SOLO_S3_HOST: ${SOLO_S3_HOST:?请在 .env 设置 SOLO_S3_HOST}
+      SOLO_S3_PORT: ${SOLO_S3_PORT:-9000}
+      SOLO_S3_ACCESS_KEY: ${SOLO_S3_ACCESS_KEY:?请在 .env 设置 SOLO_S3_ACCESS_KEY}
+      SOLO_S3_SECRET_KEY: ${SOLO_S3_SECRET_KEY:?请在 .env 设置 SOLO_S3_SECRET_KEY}
+      SOLO_S3_BUCKET: ${SOLO_S3_BUCKET:-solo}
+      SOLO_MEDIA_HOST: ${SOLO_MEDIA_HOST:?请在 .env 设置 SOLO_MEDIA_HOST}
+      SOLO_ZLM_SERVER_ID: ${SOLO_ZLM_SERVER_ID:-zlmediakit-local}
+      SOLO_ZLM_SECRET: ${SOLO_ZLM_SECRET:?请在 .env 设置 SOLO_ZLM_SECRET}
+      SOLO_ZLM_HOOK_SECRET: ${SOLO_ZLM_HOOK_SECRET:-solo}
+      SOLO_ZLM_STREAM_IP: ${SOLO_ZLM_STREAM_IP:-}
+      SOLO_JWT_SECRET: ${SOLO_JWT_SECRET:?请在 .env 设置 SOLO_JWT_SECRET}
+      # 只在直连源地址命中名单时才采信 X-Forwarded-For（nginx 容器同网络）
+      OPENAPI_TRUSTED_PROXIES: ${OPENAPI_TRUSTED_PROXIES:-127.0.0.1,::1}
+      JAVA_OPTS: ${JAVA_OPTS:--XX:MaxRAMPercentage=70 -XX:+UseG1GC}
+    ports:
+      - "${SOLO_HTTP_PORT:-8080}:8080"
+      # SIP 同时监听 UDP 与 TCP；端口被占时只改左边宿主端口
+      - "${SOLO_SIP_PORT:-5060}:5060/udp"
+      - "${SOLO_SIP_PORT:-5060}:5060/tcp"
+    volumes:
+      # 日志按天分流写在 LOG_DIR（logback-spring.xml），挂出来才不用进容器翻
+      - ./logs:/var/log/solo
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  solo-ui:
+    build:
+      context: ../solo-ui
+      dockerfile: Dockerfile
+    depends_on:
+      solo:
+        condition: service_started
+    environment:
+      SOLO_BACKEND: solo:8080
+    ports:
+      - "${UI_PORT:-80}:80"
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  redisdata:

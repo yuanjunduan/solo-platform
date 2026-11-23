@@ -39,4 +39,17 @@ public class GbDeviceChannelPageRequest {
 
     @Schema(description = "云台类型：0 未知、1 球机、2 半球、3 固定枪机、4 遥控枪机（仅对通道生效）")
     private Integer ptzType;
+
+    @Schema(description = "资源域：LOCAL 本地 / SUBORDINATE 下级平台 / REMOTE 第三方资源平台 / ALL 全部；空=全部")
+    private String domain;
+
+    @Schema(description = "左树选中分组时传入该分组的 tree_path（形如 /端点码/分组码），按前缀过滤含全部子分组")
+    private String pathPrefix;
+
+    /** 未归属任何本地组织时的过滤哨兵，与前端约定 -1 */
+    @Schema(description = "所属组织 id（通道自身 org_id 优先，为空则继承所属设备的 org_id）；-1 表示未归属；空=不过滤")
+    private Long orgId;
+
+    @Schema(description = "按组织过滤时是否包含所有子孙组织，默认 true")
+    private boolean includeSubtree = true;
 }

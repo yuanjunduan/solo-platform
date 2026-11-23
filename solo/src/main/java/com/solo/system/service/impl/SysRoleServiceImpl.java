@@ -47,11 +47,15 @@ public class SysRoleServiceImpl extends ServiceImpl<SysRoleMapper, SysRole> impl
     }
 
     @Override
+    @Transactional
     public void createRole(RoleRequest request) {
         SysRole existing = getOne(new LambdaQueryWrapper<SysRole>().eq(SysRole::getRoleCode, request.getRoleCode()));
         if (existing != null) {
             throw new ServiceException("角色编码已存在");
         }
+        // 已逻辑删除的同编码记录仍占着 uk_role_code（唯一键不含 deleted），先物理清墓碑再插入，
+        // 否则复用编码会撞唯一键、被兜底成 500「系统异常，请联系管理员」。
+        baseMapper.purgeDeletedByRoleCode(request.getRoleCode());
         SysRole role = new SysRole();
         role.setRoleCode(request.getRoleCode());
         role.setRoleName(request.getRoleName());

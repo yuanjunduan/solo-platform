@@ -11,6 +11,7 @@ import com.solo.system.request.ServerPageRequest;
 import com.solo.system.request.ServerRequest;
 import com.solo.system.service.SysServerService;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 
@@ -40,6 +41,7 @@ public class SysServerServiceImpl extends ServiceImpl<SysServerMapper, SysServer
     }
 
     @Override
+    @Transactional
     public void createServer(ServerRequest request) {
         validateRequired(request);
         SysServer existing = getOne(new LambdaQueryWrapper<SysServer>()
@@ -47,6 +49,9 @@ public class SysServerServiceImpl extends ServiceImpl<SysServerMapper, SysServer
         if (existing != null) {
             throw new ServiceException("服务器名称已存在");
         }
+        // 已逻辑删除的同名记录仍占着 uk_server_name（唯一键不含 deleted），先清墓碑再插入，
+        // 否则复用名称会撞唯一键、被兜底成 500「系统异常，请联系管理员」。
+        baseMapper.purgeDeletedByServerName(request.getServerName());
         SysServer server = new SysServer();
         server.setServerName(request.getServerName());
         server.setHost(request.getHost());
@@ -74,6 +79,8 @@ public class SysServerServiceImpl extends ServiceImpl<SysServerMapper, SysServer
             if (existing != null) {
                 throw new ServiceException("服务器名称已存在");
             }
+            // 改名复用某个已删除的名称同样会撞 uk_server_name，先清墓碑
+            baseMapper.purgeDeletedByServerName(request.getServerName());
             server.setServerName(request.getServerName());
         }
         if (request.getHost() != null && !request.getHost().isBlank()) server.setHost(request.getHost());

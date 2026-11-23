@@ -1,5 +1,19 @@
 <template>
   <div class="flex h-full gap-3 overflow-hidden p-3">
+    <!-- 左侧：目录树（随域分段切换数据源，选中组织/平台后右侧列表跟随过滤） -->
+    <div
+      class="flex w-[248px] shrink-0 flex-col overflow-hidden rounded-xl border border-border bg-card"
+    >
+      <GbCatalogTreePanel
+        :domain="treeDomain"
+        :selected-key="treeSelectedKey"
+        :groups="false"
+        title="设备目录"
+        all-label="全部设备"
+        @select="onTreeSelect"
+      />
+    </div>
+
     <!-- 左侧：列表卡片 -->
     <div class="flex min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-border bg-card">
       <!-- 工具栏 -->
@@ -45,6 +59,18 @@
           <Radar v-else class="size-4" />
         </Button>
         <Button
+          v-access="PERM.GB_ORG_ASSIGN"
+          variant="ghost"
+          size="icon"
+          class="size-8"
+          title="批量调整归属"
+          :disabled="!checkedIds.size || assigning"
+          @click="assignOpen = true"
+        >
+          <Loader2 v-if="assigning" class="size-4 animate-spin" />
+          <IconSitemap v-else class="size-4" />
+        </Button>
+        <Button
           v-access="PERM.GB_DEVICE_DELETE"
           variant="ghost"
           size="icon"
@@ -86,6 +112,32 @@
           class="h-7 w-44 rounded-md bg-transparent px-2 text-[13px] outline-none placeholder:text-muted-foreground focus:bg-muted/70"
           placeholder="请输入设备名称"
         />
+
+        <!-- 域分段：本地 / 下级 / 全部（互斥） -->
+        <div class="ml-1 flex h-7 items-center rounded-md bg-muted/50 p-0.5">
+          <button
+            v-for="opt in DOMAIN_OPTIONS"
+            :key="opt.label"
+            class="h-6 rounded px-2 text-xs transition-colors"
+            :class="
+              domainFilter === opt.value
+                ? 'bg-card text-foreground shadow-sm'
+                : 'text-muted-foreground hover:text-foreground'
+            "
+            :title="opt.hint"
+            @click="onDomain(opt.value)"
+          >
+            {{ opt.label }}
+          </button>
+        </div>
+
+        <!-- 组织筛选由左侧目录树承担（选中组织即按组织+子组织过滤），此处只保留域分段 -->
+        <span
+          v-if="treeNode?.label"
+          class="ml-1 inline-flex items-center gap-1 text-xs text-muted-foreground"
+        >
+          <span class="max-w-32 truncate" :title="treeNode.label">{{ treeNode.label }}</span>
+        </span>
 
         <span v-if="hasCondition" class="text-xs text-muted-foreground">
           匹配 {{ resource.total.value }} 台
@@ -170,6 +222,7 @@
                   </Select>
                 </span>
               </th>
+              <th class="w-40 px-3 py-2 font-normal">所属组织</th>
               <th class="w-40 px-3 py-2 font-normal">网络地址</th>
               <th class="w-44 px-3 py-2 font-normal">最近心跳</th>
             </tr>
@@ -223,6 +276,9 @@
                 </span>
               </td>
               <td class="px-3 py-2 text-xs text-muted-foreground">{{ sourceText(d.source) }}</td>
+              <td class="truncate px-3 py-2 text-xs" :title="orgLabel(d)">
+                <span :class="orgTextClass(d)">{{ orgLabel(d) }}</span>
+              </td>
               <td class="truncate px-3 py-2 font-mono text-xs" :title="d.hostAddress || ''">
                 {{ d.hostAddress || '—' }}
               </td>
@@ -295,26 +351,43 @@
         </div>
       </aside>
     </Transition>
+
+    <!-- 归属弹窗：任选目标组织，或清空归属 -->
+    <GbOrgPicker
+      v-model:open="assignOpen"
+      kind="device"
+      :tree="orgTree"
+      :count="checkedIds.size"
+      :default-org-id="orgFilter"
+      :submitting="assigning"
+      @submit="onAssign"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import {
   IconSearch,
   IconX,
   IconFilter,
   IconLoader2,
   IconDeviceCctvOff,
+  IconSitemap,
 } from '@tabler/icons-vue'
 import { Plus, Trash2, Loader2, Radar } from 'lucide-vue-next'
 import GbDeviceInspector from '@/features/gb/GbDeviceInspector.vue'
+import GbCatalogTreePanel from '@/features/gb/GbCatalogTreePanel.vue'
+import GbOrgPicker from '@/features/gb/GbOrgPicker.vue'
 import RefreshButton from '@/components/RefreshButton.vue'
 import {
   getGbDevicePageApi,
   getGbDeviceStatusCountApi,
+  getGbOrgTreeApi,
   batchDeleteGbDeviceApi,
   detectGbDeviceApi,
+  assignGbOrgApi,
 } from '@/api/gb28181'
 import { useResource } from '@/shared/composables/useResource'
 import { PERM } from '@/features/access/permissions'
@@ -324,14 +397,148 @@ import Button from '@/components/ui/button/Button.vue'
 import Checkbox from '@/components/ui/checkbox/Checkbox.vue'
 import { Select, SelectContent, SelectItem } from '@/components/ui/select'
 import { SelectTrigger as RawSelectTrigger } from 'reka-ui'
-import type { GbDevice, GbDevicePageRequest } from '@/types/api'
+import { GB_ORG_UNASSIGNED } from '@/types/api'
+import type {
+  GbCatalogDomain,
+  GbCatalogNavNode,
+  GbDevice,
+  GbDevicePageRequest,
+  GbDomain,
+  GbOrgTreeNode,
+} from '@/types/api'
 
 /* ---------------- 搜索 / 状态统计 ---------------- */
+const route = useRoute()
+const router = useRouter()
+
 const deviceIdQ = ref('')
 const nameQ = ref('')
 const status = ref<number | null>(null)
 const sourceFilter = ref<'__all__' | '1' | '2' | '3'>('__all__')
 const statusFilter = ref<'__all__' | '1' | '0' | '2'>('__all__')
+
+/* ---------------- 资源域分段 ---------------- */
+const DOMAIN_OPTIONS: Array<{ label: string; value: GbDomain | undefined; hint: string }> = [
+  { label: '本地', value: 'LOCAL', hint: '本地组织下维护的设备' },
+  { label: '下级', value: 'SUBORDINATE', hint: '下级平台目录同步来的设备' },
+  { label: '远程', value: 'REMOTE', hint: '第三方资源平台共享的设备（仅目录，暂不可播放）' },
+  { label: '全部', value: undefined, hint: '不限资源域' },
+]
+const domainFilter = ref<GbDomain | undefined>(undefined)
+/** 切域时主动清空组织筛选，标记一次以跳过组织 watch 的重复请求 */
+let suppressOrgSearch = false
+
+const onDomain = (v: GbDomain | undefined) => {
+  if (domainFilter.value === v) return
+  domainFilter.value = v
+  // 节点属于切换前的域，换域后清空选中，避免右侧仍按旧节点过滤
+  treeNode.value = null
+  platformFilter.value = undefined
+  // 下级/远程镜像没有本地归属，切换过去时把组织筛选一并清掉
+  if (v !== undefined && v !== 'LOCAL' && orgFilter.value !== undefined) {
+    suppressOrgSearch = true
+    orgFilter.value = undefined
+  }
+  cursor.value = 0
+  clearChecked()
+  resource.search()
+  fetchStatusCount()
+}
+
+/* ---------------- 组织筛选（只有本地域有归属概念） ---------------- */
+const orgFilter = ref<string | undefined>(undefined)
+const orgIncludeSubtree = ref(true)
+/** 首次挂载期间由 onMounted 统一加载，避免下钻带入的筛选触发重复请求 */
+let booted = false
+
+const onOrgChange = () => {
+  // 组织维度只对本地资源有意义，切换组织时把域分段收敛到"本地"
+  if (orgFilter.value) domainFilter.value = 'LOCAL'
+  cursor.value = 0
+  clearChecked()
+  resource.search()
+  fetchStatusCount()
+}
+
+/* ---------------- 左侧目录树（与列表共用一套筛选） ---------------- */
+const treeNode = ref<GbCatalogNavNode | null>(null)
+/** 选中的平台端点（设备页按 device_id 精确过滤） */
+const platformFilter = ref<string | undefined>(undefined)
+
+/** 树的域跟随顶部域分段：全部时不限域，根层本地组织与各平台并列 */
+const treeDomain = computed<GbCatalogDomain>(() => domainFilter.value ?? 'ALL')
+const treeSelectedKey = computed(() => treeNode.value?.key ?? '')
+/**
+ * 列表/计数实际生效的域：选中平台节点时以节点真实域为准。
+ * 平台层不按域过滤，SUBORDINATE 树下也可能出现本地接入设备端点，
+ * 此时用顶部分段会把数据过滤没，故按节点自身的域查询。
+ */
+const effectiveDomain = computed<GbDomain | undefined>(() =>
+  treeNode.value && treeNode.value.nodeType !== 'ORG' ? treeNode.value.domain : domainFilter.value,
+)
+
+const onTreeSelect = (node: GbCatalogNavNode | null) => {
+  treeNode.value = node
+  if (!node) {
+    // "全部"入口：清掉组织/端点限定
+    platformFilter.value = undefined
+    if (orgFilter.value !== undefined) {
+      suppressOrgSearch = true
+      orgFilter.value = undefined
+    }
+  } else if (node.nodeType === 'ORG') {
+    // 组织只属于本地域：选中即锁定本地，并按该组织 + 子组织过滤
+    platformFilter.value = undefined
+    domainFilter.value = 'LOCAL'
+    orgIncludeSubtree.value = true
+    const nextOrg = node.orgId ?? undefined
+    if (orgFilter.value !== nextOrg) suppressOrgSearch = true
+    orgFilter.value = nextOrg
+  } else {
+    // 平台端点（设备页不展开分组层）：按端点精确过滤
+    platformFilter.value = node.platformGbId ?? undefined
+    if (orgFilter.value !== undefined) {
+      suppressOrgSearch = true
+      orgFilter.value = undefined
+    }
+  }
+  cursor.value = 0
+  clearChecked()
+  resource.search()
+  fetchStatusCount()
+}
+
+/* ---------------- 本地组织（仅用于 id→名称展示） ---------------- */
+const orgTree = ref<GbOrgTreeNode[]>([])
+const orgNameMap = computed(() => {
+  const map = new Map<string, string>()
+  const walk = (nodes: GbOrgTreeNode[]) => {
+    for (const node of nodes) {
+      map.set(node.id, node.name)
+      if (node.children?.length) walk(node.children)
+    }
+  }
+  walk(orgTree.value)
+  return map
+})
+
+const fetchOrgTree = async () => {
+  try {
+    orgTree.value = (await getGbOrgTreeApi()).data ?? []
+  } catch {
+    // 无组织权限或接口异常时降级：组织列显示原值，不影响列表
+    orgTree.value = []
+  }
+}
+
+const orgLabel = (d: GbDevice) => {
+  if (d.domain !== 'LOCAL') return '—'
+  if (!d.orgId) return '未归属'
+  return orgNameMap.value.get(d.orgId) ?? '—'
+}
+
+const orgTextClass = (d: GbDevice) =>
+  d.domain === 'LOCAL' && !d.orgId ? 'text-amber-500/80' : 'text-muted-foreground'
 
 // 表头状态筛选 ↔ 顶部状态 tab 双向同步，两边共用一个 status 值
 // 改一边另一边自动跟着变，省得写两套逻辑
@@ -357,7 +564,15 @@ const tabs = computed(() => [
 ])
 
 const fetchStatusCount = async () => {
-  const rows = (await getGbDeviceStatusCountApi()).data
+  // 计数与列表同一口径：域分段 + 组织筛选（含下级）/ 端点过滤
+  const rows = (
+    await getGbDeviceStatusCountApi({
+      domain: effectiveDomain.value,
+      orgId: orgFilter.value,
+      includeSubtree: orgIncludeSubtree.value,
+      platformId: platformFilter.value,
+    })
+  ).data
   const find = (s: number) => rows.find((r) => r.status === s)?.count ?? 0
   const online = find(1)
   const offline = find(0)
@@ -382,7 +597,10 @@ const hasCondition = computed(
     !!deviceIdQ.value.trim() ||
     !!nameQ.value.trim() ||
     status.value !== null ||
-    sourceFilter.value !== '__all__',
+    sourceFilter.value !== '__all__' ||
+    domainFilter.value !== undefined ||
+    orgFilter.value !== undefined ||
+    platformFilter.value !== undefined,
 )
 
 const resource = useResource<GbDevicePageRequest, GbDevice>({
@@ -393,6 +611,10 @@ const resource = useResource<GbDevicePageRequest, GbDevice>({
       name: nameQ.value.trim() || undefined,
       status: status.value ?? undefined,
       source: sourceFilter.value === '__all__' ? undefined : Number(sourceFilter.value),
+      domain: effectiveDomain.value,
+      orgId: orgFilter.value,
+      includeSubtree: orgIncludeSubtree.value,
+      platformId: platformFilter.value,
     }),
   initial: { page: 1, pageSize: 50 },
 })
@@ -412,15 +634,34 @@ watch(sourceFilter, () => {
   clearChecked()
   resource.search()
 })
+watch([orgFilter, orgIncludeSubtree], () => {
+  // onDomain 主动清空组织筛选时，列表已由 onDomain 自行刷新
+  if (suppressOrgSearch) {
+    suppressOrgSearch = false
+    return
+  }
+  // 首屏由 onMounted 统一加载
+  if (!booted) {
+    if (orgFilter.value) domainFilter.value = 'LOCAL'
+    return
+  }
+  onOrgChange()
+})
 
 const onClear = () => {
   deviceIdQ.value = ''
   nameQ.value = ''
   status.value = null
   sourceFilter.value = '__all__'
+  domainFilter.value = undefined
+  treeNode.value = null
+  platformFilter.value = undefined
+  orgFilter.value = undefined
+  orgIncludeSubtree.value = true
   cursor.value = 0
   clearChecked()
   resource.search()
+  fetchStatusCount()
 }
 
 /* ---------------- 选择（勾选） ---------------- */
@@ -553,6 +794,36 @@ const onDetect = async () => {
   }
 }
 
+/* ---------------- 批量调整组织归属 ---------------- */
+const assigning = ref(false)
+const assignOpen = ref(false)
+
+/** 目标组织由弹窗任选：'-1' = 清空归属 */
+const onAssign = async (orgId: string) => {
+  if (!checkedIds.value.size) return
+  const count = checkedIds.value.size
+  assigning.value = true
+  try {
+    const res = await assignGbOrgApi({
+      orgId,
+      deviceIds: [...checkedIds.value],
+    })
+    toast.success(
+      orgId === GB_ORG_UNASSIGNED
+        ? `已清空 ${res.data?.devices ?? count} 台设备的组织归属`
+        : `已调整 ${res.data?.devices ?? count} 台设备的归属`,
+    )
+    assignOpen.value = false
+    clearChecked()
+    if (selected.value) selected.value = null
+    await Promise.all([resource.search(), fetchStatusCount(), fetchOrgTree()])
+  } catch {
+    // 非本地域等拒绝原因由请求拦截器提示
+  } finally {
+    assigning.value = false
+  }
+}
+
 /* ---------------- 展示辅助 ---------------- */
 const displayName = (d: GbDevice) => d.name || d.reportName || d.hostAddress || '—'
 
@@ -629,7 +900,31 @@ let observer: IntersectionObserver | null = null
 
 onMounted(async () => {
   window.addEventListener('keydown', onGlobalKeydown)
-  await Promise.all([resource.load(true), fetchStatusCount()])
+  // 组织页下钻：?orgId=xxx 直接带入组织筛选，加载后把参数从地址栏抹掉
+  const drillOrgId = typeof route.query.orgId === 'string' ? route.query.orgId : undefined
+  if (drillOrgId) {
+    orgFilter.value = drillOrgId
+    // 组织只属于本地域，下钻时把分段收敛到"本地"，与后端锁定口径一致
+    domainFilter.value = 'LOCAL'
+    // subtree=0：只看该组织直接归属（与组织页"直接设备"计数口径一致）
+    orgIncludeSubtree.value = route.query.subtree !== '0'
+    // 占位节点让树的选中态与列表筛选一致；名称在组织树加载后补上
+    treeNode.value = {
+      key: `org:${drillOrgId}`,
+      nodeType: 'ORG',
+      label: '',
+      domain: 'LOCAL',
+      orgId: drillOrgId,
+      hasChildren: false,
+    }
+  }
+  await Promise.all([resource.load(true), fetchStatusCount(), fetchOrgTree()])
+  if (drillOrgId) {
+    const name = orgNameMap.value.get(drillOrgId)
+    if (name && treeNode.value) treeNode.value.label = name
+    await router.replace({ path: route.path, query: {} })
+  }
+  booted = true
   observer = new IntersectionObserver(
     (entries) => {
       if (entries[0].isIntersecting) resource.load(false)

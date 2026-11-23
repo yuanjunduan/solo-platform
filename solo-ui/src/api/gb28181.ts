@@ -11,6 +11,7 @@ import type {
   GbChannelSubtreePageRequest,
   GbDeviceStatusCount,
   GbChannelStatusCount,
+  GbCatalogSource,
   GbPtzPreset,
   GbDeviceAlarm,
   GbDeviceAlarmPageRequest,
@@ -55,7 +56,16 @@ import type {
   GbPlatformPageRequest,
   GbRecordFile,
   GbRecordPlan,
+  GbRecordPlanPageRequest,
   GbViewRecord,
+  GbOrg,
+  GbOrgTreeNode,
+  GbOrgSaveRequest,
+  GbOrgAssignRequest,
+  GbOrgAssignResult,
+  GbDomain,
+  GbCatalogNavLevel,
+  GbCatalogNavRequest,
   PageResult,
 } from '@/types/api'
 
@@ -72,9 +82,27 @@ export const searchGbDeviceApi = (params: {
   pageSize?: number
 }) => get<PageResult<GbDevice>>('/api/gb28181/device/search', { params })
 
-/** 设备状态统计（全局口径） */
-export const getGbDeviceStatusCountApi = () =>
-  get<GbDeviceStatusCount[]>('/api/gb28181/device/status-count')
+/**
+ * 设备状态统计。
+ * domain 限定资源域，orgId 限定组织（'-1'=未归属），与列表的域分段/组织筛选同一口径；
+ * 不传 orgId 时后端不按组织过滤；platformId 限定单个端点（左树选中平台节点）。
+ */
+export const getGbDeviceStatusCountApi = (
+  params: {
+    domain?: GbDomain
+    orgId?: string
+    includeSubtree?: boolean
+    platformId?: string
+  } = {},
+) =>
+  get<GbDeviceStatusCount[]>('/api/gb28181/device/status-count', {
+    params: {
+      domain: params.domain || undefined,
+      orgId: params.orgId || undefined,
+      includeSubtree: params.orgId ? (params.includeSubtree ?? true) : undefined,
+      platformId: params.platformId || undefined,
+    },
+  })
 
 /** 设备详情 */
 export const getGbDeviceApi = (deviceId: string) =>
@@ -145,10 +173,32 @@ export const parseSyncStatus = (
 export const getGbDeviceChannelPageApi = (data: GbDeviceChannelPageRequest) =>
   post<PageResult<GbDeviceChannel>>('/api/gb28181/device-channel/page', data)
 
-/** 通道状态统计（按 parental 区分通道/分组）；传 platformId 时只统计该下级平台上报的目录 */
-export const getGbChannelStatusCountApi = (platformId?: string) =>
+/** 目录来源列表（推过目录的端点：下级平台 / 接入设备） */
+export const getGbCatalogSourceListApi = () =>
+  get<GbCatalogSource[]>('/api/gb28181/device-channel/sources')
+
+/**
+ * 通道状态统计（按 parental 区分通道/分组）。
+ * deviceId 限定来源端点；domain 限定资源域；orgId 按有效组织（自身优先，否则继承设备）统计，'-1'=未归属。
+ * 带 orgId 时后端强制锁定 LOCAL，domain 参数不再参与；pathPrefix 限定左树选中的镜像分组子树。
+ */
+export const getGbChannelStatusCountApi = (
+  params: {
+    deviceId?: string
+    domain?: GbDomain
+    orgId?: string
+    includeSubtree?: boolean
+    pathPrefix?: string
+  } = {},
+) =>
   get<GbChannelStatusCount[]>('/api/gb28181/device-channel/status-count', {
-    params: { platformId: platformId || undefined },
+    params: {
+      deviceId: params.deviceId || undefined,
+      domain: params.domain || undefined,
+      orgId: params.orgId || undefined,
+      includeSubtree: params.orgId ? (params.includeSubtree ?? true) : undefined,
+      pathPrefix: params.pathPrefix || undefined,
+    },
   })
 
 /** 按设备查询目录树（分组为容器、通道为叶子，按 parentId 组装） */
@@ -166,6 +216,23 @@ export const getGbDeviceChannelTreeChildrenApi = (deviceId: string, orgCode?: st
 /** 选中组织下的通道分页（includeSubtree 决定是否含子组织） */
 export const getGbChannelSubtreePageApi = (data: GbChannelSubtreePageRequest) =>
   post<PageResult<GbDeviceChannel>>('/api/gb28181/device-channel/subtree/page', data)
+
+/* ===== 目录左树（设备页 / 通道页共用，逐层懒加载） ===== */
+
+/**
+ * 懒加载左树一层。
+ * domain=LOCAL 本地组织树；SUBORDINATE 下级平台 + 镜像分组；REMOTE 恒为空；
+ * ALL 根层本地组织根与各平台并列。parentKey 不传取根层。
+ */
+export const getGbCatalogNavApi = (params: GbCatalogNavRequest = {}) =>
+  get<GbCatalogNavLevel>('/api/gb28181/catalog/nav', {
+    params: {
+      domain: params.domain || undefined,
+      parentKey: params.parentKey || undefined,
+      keyword: params.keyword || undefined,
+      limit: params.limit || undefined,
+    },
+  })
 
 /** 手动新增通道（状态/来源由后端设定） */
 export const saveGbDeviceChannelApi = (data: Partial<GbDeviceChannel>) =>
@@ -192,6 +259,15 @@ export const startGbPlayApi = (data: GbPlayStartRequest, signal?: AbortSignal) =
 /** 停止点播（SIP BYE + 关闭收流端口） */
 export const stopGbPlayApi = (data: GbPlayStopRequest) =>
   post<void>('/api/gb28181/play/stop', data)
+
+/**
+ * 入站通道点播：通道行来自目录同步，本地没有 gb_device_channel 记录，
+ * 按 res_channel.id 反查来源平台后向对端发起 INVITE。
+ */
+export const startGbInboundPlayApi = (
+  data: { channelRowId: string; transport?: string; streamNumber?: string },
+  signal?: AbortSignal,
+) => post<GbPlayResult>('/api/gb28181/play/inbound', data, { signal })
 
 /* ===== 语音广播 ===== */
 
@@ -557,6 +633,25 @@ export const deleteGbPlatformApi = (id: string) =>
 /** 批量删除黑名单 */
 export const batchDeleteGbPlatformApi = (ids: string[]) =>
   post<void>('/api/gb28181/platform/batch/delete', { ids })
+
+/* ===== 本地组织树（资源归属） ===== */
+
+/** 组织树（含每个节点的直接设备数/通道数） */
+export const getGbOrgTreeApi = () => get<GbOrgTreeNode[]>('/api/gb28181/org/tree')
+
+/** 新建组织 */
+export const saveGbOrgApi = (data: GbOrgSaveRequest) => post<GbOrg>('/api/gb28181/org', data)
+
+/** 编辑组织（换父时后端重写整棵子树路径） */
+export const updateGbOrgApi = (id: string, data: GbOrgSaveRequest) =>
+  put<void>(`/api/gb28181/org/${id}`, data)
+
+/** 删除组织（有子组织或仍有资源归属时后端拒绝） */
+export const deleteGbOrgApi = (id: string) => del<void>(`/api/gb28181/org/${id}`)
+
+/** 批量调整设备/通道的组织归属；orgId 传 '-1' 表示清空 */
+export const assignGbOrgApi = (data: GbOrgAssignRequest) =>
+  post<GbOrgAssignResult>('/api/gb28181/org/assign', data)
 
 /* ===== 云端录像中心 ===== */
 

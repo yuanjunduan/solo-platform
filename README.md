@@ -290,6 +290,29 @@ cd solo-ui && npm install && npm run dev
 
 > **重启后端不会中断正在播放的流**：ZLM 和设备之间的 RTP 推流跟后端进程无关。启动时会把 Redis 里残留的会话逐个探活：ZLM 上流还在的原样接管，停止/回放控制照常可用；流已经没了、承载节点不在了，或者下载任务这类进程内状态续不上的，才会清掉。
 
+### 6. 容器化部署（可选）
+
+仓库提供生产用构建产物：
+
+| 文件 | 作用 |
+|---|---|
+| `solo/Dockerfile` | 两阶段构建后端（Maven 出 jar → JRE 运行），非 root，健康检查打 `/api/health` |
+| `solo-ui/Dockerfile` | Node 构建前端，nginx 托管静态资源 |
+| `solo-ui/nginx.conf` | SPA 回退 + `/api`、`/open-api` 反代；SSE/WebSocket 关闭缓冲 |
+| `deploy/docker-compose.yml` | PostgreSQL + Redis + 后端 + 控制台 四件套 |
+| `deploy/.env.example` | 全部可覆盖配置项（SIP 编码/密码、JWT、ZLM secret、宿主机 IP…） |
+
+```bash
+cd deploy
+cp .env.example .env        # 填 SOLO_IP、SOLO_SIP_*、SOLO_JWT_SECRET、SOLO_ZLM_SECRET 等
+docker compose up -d --build
+curl -fsS "http://127.0.0.1:${SOLO_HTTP_PORT:-8080}/api/health/ready"
+```
+
+- ZLMediaKit 与 S3（RustFS）不在该编排内，按现场单独部署后用 `SOLO_MEDIA_HOST` / `SOLO_S3_HOST` 指过去。
+- `application-pg.yaml` 的地址、账号、密钥均可被环境变量覆盖，默认值与本机开发一致（不设变量行为不变）。
+- 备份、保留期、健康探针与排障见 [docs/OPERATIONS.md](docs/OPERATIONS.md)。
+
 ## 项目结构
 
 ```

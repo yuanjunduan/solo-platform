@@ -71,7 +71,8 @@ class DigestServerAuthenticationHelperTest {
 
     @Test
     void acceptsValidQopAuthDigestAndUppercaseResponse() {
-        when(authorization.getResponse()).thenReturn(response(PASSWORD).toUpperCase());
+        String expected = response(PASSWORD).toUpperCase();
+        when(authorization.getResponse()).thenReturn(expected);
 
         assertThat(helper.authenticate(request, DEVICE_ID, REALM, PASSWORD)).isTrue();
     }
@@ -162,7 +163,11 @@ class DigestServerAuthenticationHelperTest {
     }
 
     private void respondUsing(String password) {
-        when(authorization.getResponse()).thenReturn(response(password));
+        // 必须先算好期望值再进 when(...)：response() 会碰 requestUri 这个 mock，
+        // 在 stubbing 未完成时调用另一个 mock 会被 Mockito 判成 UnfinishedStubbing。
+        // 用 lenient：有的用例在读 response 之前就被别的校验拦下了（与 setUp 一致）
+        String expected = response(password);
+        lenient().when(authorization.getResponse()).thenReturn(expected);
     }
 
     private String response(String password) {

@@ -6,6 +6,7 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.solo.common.ServiceException;
 import com.solo.gb28181.config.Gb28181Properties;
+import com.solo.gb28181.constant.GbDomain;
 import com.solo.gb28181.constant.GbSource;
 import com.solo.gb28181.entity.GbDevice;
 import com.solo.gb28181.entity.GbDeviceChannel;
@@ -13,12 +14,16 @@ import com.solo.gb28181.mapper.GbDeviceChannelMapper;
 import com.solo.gb28181.mapper.GbDeviceMapper;
 import com.solo.gb28181.request.GbChannelSubtreePageRequest;
 import com.solo.gb28181.request.GbDeviceChannelPageRequest;
+import com.solo.gb28181.response.GbCatalogSourceVO;
 import com.solo.gb28181.response.GbChannelStatusCountVO;
 import com.solo.gb28181.response.GbChannelTreeNodeVO;
 import com.solo.gb28181.response.GbChannelTreeLevelVO;
 import com.solo.gb28181.response.GbDeviceChannelResponse;
 import com.solo.gb28181.response.GbTreeCountVO;
 import com.solo.gb28181.service.GbDeviceChannelService;
+import com.solo.gb28181.service.GbOrgService;
+import com.solo.gb28181.support.CatalogSyncStatusService;
+import com.solo.gb28181.utils.SipUtils;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.BeanUtils;
@@ -43,8 +48,15 @@ public class GbDeviceChannelServiceImpl extends ServiceImpl<GbDeviceChannelMappe
     /** 通道分页上限：前端默认 200，再大也没人看 */
     private static final long MAX_SUBTREE_PAGE_SIZE = 500L;
 
+    /** 国标编码第 11-13 位 = 200 表示平台（下级平台），其余按设备/网关处理 */
+    private static final int TYPE_PLATFORM_CODE = 200;
+    private static final String KIND_PLATFORM = "PLATFORM";
+    private static final String KIND_DEVICE = "DEVICE";
+
     private final GbDeviceMapper deviceMapper;
     private final Gb28181Properties properties;
+    private final GbOrgService orgService;
+    private final CatalogSyncStatusService catalogSyncStatusService;
 
     @Override
     public Page<GbDeviceChannelResponse> pageQuery(GbDeviceChannelPageRequest request) {
@@ -54,9 +66,10 @@ public class GbDeviceChannelServiceImpl extends ServiceImpl<GbDeviceChannelMappe
             wrapper.eq(GbDeviceChannel::getParental, request.getParental());
         }
         if (request.getDeviceId() != null && !request.getDeviceId().isBlank()) {
-            wrapper.like(GbDeviceChannel::getDeviceId, request.getDeviceId());
+            // 设备/来源编码是 20 位定长标识，必须精确匹配：模糊匹配会把其它编码串进来
+            wrapper.eq(GbDeviceChannel::getDeviceId, request.getDeviceId().trim());
         }
-        // 通道页以「下级平台」为第一维度：按上报目录的平台编码精确过滤
+        // 历史参数：platform_id 恒等于 device_id（同一列信息的冗余副本），保留兼容旧调用
         if (request.getPlatformId() != null && !request.getPlatformId().isBlank()) {
             wrapper.eq(GbDeviceChannel::getPlatformId, request.getPlatformId().trim());
         }
@@ -83,19 +96,91 @@ public class GbDeviceChannelServiceImpl extends ServiceImpl<GbDeviceChannelMappe
             wrapper.eq(GbDeviceChannel::getParental, 0)
                     .eq(GbDeviceChannel::getPtzType, request.getPtzType());
         }
+        // 左树选中镜像分组：tree_path 是物化路径，前缀匹配天然含全部子孙分组
+        String pathPrefix = trimToNull(request.getPathPrefix());
+        if (pathPrefix != null) {
+            wrapper.likeRight(GbDeviceChannel::getTreePath, pathPrefix + "/");
+        }
+        applyDomainAndOrg(wrapper, request.getDomain(), request.getOrgId(), request.isIncludeSubtree());
         wrapper.orderByAsc(GbDeviceChannel::getParental)  // 分组（1）排在通道（0）之前
                 .orderByAsc(GbDeviceChannel::getDeviceId)
                 .orderByAsc(GbDeviceChannel::getChannelId);
         Page<GbDeviceChannel> raw = page(new Page<>(request.getPage(), request.getPageSize()), wrapper);
 
-        // 转 response + 直接透传 entity 字段（不回填任何冗余字段）
+        // 转 response 并回填"有效组织"：行内自带的 org_id 是覆盖值，为空时才继承设备
         List<GbDeviceChannelResponse> rows = raw.getRecords().stream()
                 .map(GbDeviceChannelServiceImpl::toResponse)
                 .collect(Collectors.toCollection(ArrayList::new));
+        fillEffectiveOrgId(rows);
 
         Page<GbDeviceChannelResponse> resp = new Page<>(raw.getCurrent(), raw.getSize(), raw.getTotal());
         resp.setRecords(rows);
         return resp;
+    }
+
+    /**
+     * 域 + 组织过滤（通道页）。
+     *
+     * <p>域不做冗余列（通道随设备走），用 device_id 关联子查询；组织的有效值 =
+     * {@code COALESCE(通道.org_id, 设备.org_id)}。子查询走 {@code uk_device_id} 索引，
+     * 逐行代价是一次主键定位，可以接受；不做 JOIN 是因为分页 wrapper 只管单表。</p>
+     */
+    private void applyDomainAndOrg(LambdaQueryWrapper<GbDeviceChannel> wrapper,
+                                   String domainParam, Long orgId, boolean includeSubtree) {
+        String domain = normalizeDomain(domainParam);
+        // 组织只属于本地域：带 orgId 时锁定 LOCAL；与显式指定的其它域冲突则必为空集
+        if (orgId != null) {
+            if (domain != null && !GbDomain.LOCAL.equals(domain)) {
+                wrapper.apply("1 = 0");
+                return;
+            }
+            domain = GbDomain.LOCAL;
+        }
+        if (domain != null) {
+            wrapper.apply("device_id IN (SELECT d.device_id FROM gb_device d WHERE d.domain = {0})", domain);
+        }
+        if (orgId == null) {
+            return;
+        }
+        String effective = "COALESCE(org_id, (SELECT d.org_id FROM gb_device d"
+                + " WHERE d.device_id = gb_device_channel.device_id))";
+        if (orgId < 0) {
+            wrapper.apply(effective + " IS NULL");
+            return;
+        }
+        List<Long> orgIds = orgService.subtreeOrgIds(orgId, includeSubtree);
+        if (orgIds.isEmpty()) {
+            wrapper.apply("1 = 0");
+            return;
+        }
+        // 组织 id 是库内雪花主键（Long），拼接无注入面
+        wrapper.apply(effective + " IN (" + orgIds.stream()
+                .map(String::valueOf).collect(Collectors.joining(",")) + ")");
+    }
+
+    /** 本页涉及的设备一次查出 org_id / domain，回填有效组织与资源域，避免逐行查库 */
+    private void fillEffectiveOrgId(List<GbDeviceChannelResponse> rows) {
+        if (rows.isEmpty()) {
+            return;
+        }
+        Set<String> deviceIds = rows.stream()
+                .map(GbDeviceChannel::getDeviceId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        Map<String, GbDevice> devices = new HashMap<>(deviceIds.size() * 2);
+        if (!deviceIds.isEmpty()) {
+            for (GbDevice d : deviceMapper.selectList(new LambdaQueryWrapper<GbDevice>()
+                    .select(GbDevice::getDeviceId, GbDevice::getOrgId, GbDevice::getDomain)
+                    .in(GbDevice::getDeviceId, deviceIds))) {
+                devices.put(d.getDeviceId(), d);
+            }
+        }
+        for (GbDeviceChannelResponse row : rows) {
+            GbDevice device = devices.get(row.getDeviceId());
+            row.setEffectiveOrgId(row.getOrgId() != null
+                    ? row.getOrgId() : (device == null ? null : device.getOrgId()));
+            row.setDomain(device == null ? null : device.getDomain());
+        }
     }
 
     private static GbDeviceChannelResponse toResponse(GbDeviceChannel src) {
@@ -105,8 +190,40 @@ public class GbDeviceChannelServiceImpl extends ServiceImpl<GbDeviceChannelMappe
     }
 
     @Override
-    public List<GbChannelStatusCountVO> statusCount(String platformId) {
-        return getBaseMapper().selectStatusCount(trimToNull(platformId));
+    public List<GbCatalogSourceVO> catalogSources() {
+        List<GbCatalogSourceVO> rows = getBaseMapper().selectCatalogSources();
+        if (rows == null || rows.isEmpty()) {
+            return Collections.emptyList();
+        }
+        // 来源类型只由国标编码判定（协议事实），不看任何登记表：
+        // 第 11-13 位为 200 是平台，其余（118/131/132 等）按设备/网关处理
+        // 同步进度逐源读 Redis（来源数 = 端点数，量级几十到几百，单次 GET 可接受）
+        for (GbCatalogSourceVO row : rows) {
+            row.setKind(SipUtils.getTypeCodeFromGbCode(row.getDeviceId()) == TYPE_PLATFORM_CODE
+                    ? KIND_PLATFORM : KIND_DEVICE);
+            row.setSync(catalogSyncStatusService.getSnapshot(row.getDeviceId()));
+        }
+        return rows;
+    }
+
+    @Override
+    public List<GbChannelStatusCountVO> statusCount(String deviceId, String platformId,
+                                                    Long orgId, String domain, boolean includeSubtree,
+                                                    String pathPrefix) {
+        String device = trimToNull(deviceId);
+        // deviceId 优先；只为兼容旧调用才回落到 platformId
+        String source = device != null ? device : trimToNull(platformId);
+        String domainParam = normalizeDomain(domain);
+        String prefix = trimToNull(pathPrefix);
+        // 组织只属于本地域：带 orgId 时后端强制锁定 LOCAL，domain 参数不再参与
+        if (orgId != null) {
+            // -1 = 未归属；正数按有效组织子树统计，与列表同一套规则
+            return orgId < 0
+                    ? getBaseMapper().selectStatusCount(source, null, null, null, true, prefix)
+                    : getBaseMapper().selectStatusCount(source, null, null,
+                            orgService.subtreeOrgIds(orgId, includeSubtree), false, prefix);
+        }
+        return getBaseMapper().selectStatusCount(source, null, domainParam, null, false, prefix);
     }
 
     @Override
@@ -343,6 +460,21 @@ public class GbDeviceChannelServiceImpl extends ServiceImpl<GbDeviceChannelMappe
         }
         String t = s.trim();
         return t.isEmpty() ? null : t;
+    }
+
+    /**
+     * 域参数归一：ALL（左树"全部"页签）与空值都表示不过滤，返回 null。
+     * 三个真实域沿用原有校验，拼错仍然报错而不是被当成"全部"静默放行。
+     */
+    private static String normalizeDomain(String domainParam) {
+        String domain = trimToNull(domainParam);
+        if (domain == null || "ALL".equalsIgnoreCase(domain)) {
+            return null;
+        }
+        if (!GbDomain.isValid(domain)) {
+            throw new ServiceException("未知的资源域：" + domain);
+        }
+        return domain;
     }
 
     @Override

@@ -50,8 +50,16 @@ public class GbDeviceController {
     @Operation(summary = "按状态统计设备数")
     @GetMapping("/status-count")
     @RequirePermission({"gb28181:device:list"})
-    public Result<List<GbDeviceStatusCountVO>> statusCount() {
-        return Result.success(gbDeviceService.statusCount());
+    public Result<List<GbDeviceStatusCountVO>> statusCount(
+            @Parameter(description = "资源域：LOCAL / SUBORDINATE / REMOTE / ALL；空=全部")
+            @RequestParam(required = false) String domain,
+            @Parameter(description = "组织 id；-1=未归属；不传=不按组织过滤")
+            @RequestParam(required = false) Long orgId,
+            @Parameter(description = "按组织统计时是否含子孙组织，默认 true")
+            @RequestParam(defaultValue = "true") boolean includeSubtree,
+            @Parameter(description = "左树选中的端点国标码；不传=不过滤")
+            @RequestParam(required = false) String platformId) {
+        return Result.success(gbDeviceService.statusCount(domain, orgId, includeSubtree, platformId));
     }
 
 

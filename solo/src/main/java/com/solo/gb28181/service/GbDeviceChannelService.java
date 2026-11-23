@@ -5,6 +5,7 @@ import com.baomidou.mybatisplus.extension.service.IService;
 import com.solo.gb28181.entity.GbDeviceChannel;
 import com.solo.gb28181.request.GbChannelSubtreePageRequest;
 import com.solo.gb28181.request.GbDeviceChannelPageRequest;
+import com.solo.gb28181.response.GbCatalogSourceVO;
 import com.solo.gb28181.response.GbChannelStatusCountVO;
 import com.solo.gb28181.response.GbChannelTreeNodeVO;
 import com.solo.gb28181.response.GbChannelTreeLevelVO;
@@ -19,7 +20,24 @@ public interface GbDeviceChannelService extends IService<GbDeviceChannel> {
 
     Page<GbDeviceChannelResponse> pageQuery(GbDeviceChannelPageRequest request);
 
-    List<GbChannelStatusCountVO> statusCount(String platformId);
+    /**
+     * 目录来源列表：来源 = 推过目录的端点编码（{@code gb_device_channel.device_id}），
+     * 由目录数据自身聚合，供通道页作为第一维度选择器使用。
+     */
+    List<GbCatalogSourceVO> catalogSources();
+
+    /**
+     * 通道状态统计。
+     *
+     * @param deviceId       来源端点编码（语义正确，优先使用）
+     * @param platformId     历史参数（等价于 deviceId，仅为兼容旧调用保留）
+     * @param orgId          组织 id；null=不按组织过滤，-1=只看未归属，正数=按有效组织（自身优先，否则继承设备）
+     * @param domain         资源域 LOCAL / SUBORDINATE / REMOTE；null=不限（带 orgId 时后端强制锁定 LOCAL）
+     * @param includeSubtree 带 orgId 时是否含子孙组织
+     */
+    List<GbChannelStatusCountVO> statusCount(String deviceId, String platformId,
+                                             Long orgId, String domain, boolean includeSubtree,
+                                             String pathPrefix);
 
     /**
      * 按设备组装目录树：分组为容器（children 挂下级分组/通道），通道为叶子。

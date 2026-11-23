@@ -23,6 +23,9 @@ public class WebMvcConfig implements WebMvcConfigurer {
                 .excludePathPatterns(
                         "/api/auth/login",
                         "/api/auth/refresh",
+                        // 健康探针：供容器编排 / 负载均衡调用，不携带 JWT（M7）
+                        "/api/health",
+                        "/api/health/**",
                         // ZLMediaKit hook 由 ZLM 主动调用，无 JWT，使用 secret 自鉴权
                         "/api/hook/**",
                         // 第三方开放 API：独立 appKey/appSecret 签名鉴权，不走平台用户体系

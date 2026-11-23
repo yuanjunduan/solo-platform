@@ -59,7 +59,7 @@
             <!-- reka-ui 的 SelectItem 不允许空串 value，用 __default__ 占位，提交时还原成空串 -->
             <Select
               :model-value="form.transport || '__default__'"
-              @update:model-value="(v: string) => (form.transport = v === '__default__' ? '' : v)"
+              @update:model-value="onTransportChange"
             >
               <SelectTrigger class="h-8 w-full text-xs">
                 <SelectValue placeholder="随设备" />
@@ -79,7 +79,7 @@
           <div class="flex-1">
             <Select
               :model-value="form.streamNumber || '__default__'"
-              @update:model-value="(v: string) => (form.streamNumber = v === '__default__' ? '' : v)"
+              @update:model-value="onStreamNumberChange"
             >
               <SelectTrigger class="h-8 w-full text-xs">
                 <SelectValue placeholder="主码流" />
@@ -249,6 +249,7 @@ import {
   deleteRecordPlanApi,
 } from '@/api/gb28181'
 import type { GbRecordPlan, GbRecordPlanPeriod } from '@/types/api'
+import type { AcceptableValue } from 'reka-ui'
 
 const props = defineProps<{
   plan?: GbRecordPlan
@@ -345,6 +346,18 @@ watch(
     form.channelId = undefined
   },
 )
+
+/* ---------------- Select 空值占位还原 ----------------
+ * reka-ui 的 value 不允许空串，界面上用 __default__ 表示"随设备 / 主码流"，
+ * 选中后在这里还原成提交用的空串。
+ */
+const onTransportChange = (v: AcceptableValue) => {
+  form.transport = v === '__default__' ? '' : String(v)
+}
+
+const onStreamNumberChange = (v: AcceptableValue) => {
+  form.streamNumber = v === '__default__' ? '' : String(v)
+}
 
 /* ---------------- 时段编辑 ---------------- */
 const addPeriod = (dayIdx: number) => {

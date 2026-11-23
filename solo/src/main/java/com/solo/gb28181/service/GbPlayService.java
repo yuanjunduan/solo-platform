@@ -1,6 +1,7 @@
 package com.solo.gb28181.service;
 
 import com.solo.gb28181.entity.GbInviteSession;
+import com.solo.gb28181.request.InboundPlayRequest;
 import com.solo.gb28181.request.PlayStartRequest;
 import com.solo.gb28181.request.PlayStopRequest;
 import com.solo.gb28181.response.PlayResultResponse;
@@ -19,6 +20,12 @@ import com.solo.gb28181.response.PlayResultResponse;
 public interface GbPlayService {
 
     PlayResultResponse start(PlayStartRequest req);
+
+    /**
+     * 入站通道点播：通道行来自目录同步，没有本地 {@code gb_device_channel} 记录，
+     * 按 {@code res_channel} 反查来源平台后向对端发起 INVITE。
+     */
+    PlayResultResponse startInbound(InboundPlayRequest req);
 
     void stop(PlayStopRequest req);
 

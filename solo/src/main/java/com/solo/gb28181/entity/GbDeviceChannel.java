@@ -29,6 +29,10 @@ public class GbDeviceChannel {
     @Schema(description = "来源接入平台国标 ID（发起 Catalog 的注册方；多下级平台据此区分通道归属，现阶段与 deviceId 同值）")
     private String platformId;
 
+    @Schema(description = "组织归属覆盖值 gb_org.id；NULL=继承所属设备的 org_id，有效组织 = COALESCE(通道值, 设备值)")
+    @JsonSerialize(using = ToStringSerializer.class)
+    private Long orgId;
+
     @Schema(description = "通道国标 ID（20 位）")
     private String channelId;
 
@@ -127,6 +131,27 @@ public class GbDeviceChannel {
     @Schema(description = "所属业务分组（215）国标码；仅级联推送 216 虚拟组织时回填，不落库")
     @TableField(exist = false)
     private String businessGroupId;
+
+    // ---------------- 全局身份（3.9.3 / 3.10.3）：组报文用，不落库 ----------------
+    // 落库的是 res_channel / sync_staging 上的 origin_* 四列；这里只是把它们带到 XML 层。
+    // 出站恒带 OriginPlatformId + OriginCode：本地资源 = 本平台国标码 + 自身码（由 XML 兜底），
+    // 入站/转发资源 = 逐跳透传过来的最上游身份，上游没给就只能诚实填"直接来源"。
+
+    @Schema(description = "最上游平台国标码；NULL/空 = 本地资源，XML 兜底本平台国标码")
+    @TableField(exist = false)
+    private String originPlatformCode;
+
+    @Schema(description = "最上游平台上的原始编码；NULL/空 = 本地资源，XML 兜底自身编码")
+    @TableField(exist = false)
+    private String originCode;
+
+    @Schema(description = "来源链（平台国标码逗号串，最上游 → 直接来源）；空 = 未知")
+    @TableField(exist = false)
+    private String originChain;
+
+    @Schema(description = "级联跳数；0/空 = 本地资源")
+    @TableField(exist = false)
+    private Integer hopCount;
 
     public String getExposedOrChannelId() {
         return (exposedCode != null && !exposedCode.isBlank()) ? exposedCode : channelId;

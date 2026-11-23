@@ -1,6 +1,8 @@
 package com.solo.openapi.web;
 
 import com.solo.common.ServiceException;
+import com.solo.domain.event.support.EventScopeDeniedException;
+import com.solo.domain.event.support.EventStreamRejectedException;
 import com.solo.openapi.constant.OpenApiConstants;
 import com.solo.openapi.constant.OpenApiErrorCode;
 import com.solo.openapi.exception.OpenApiException;
@@ -13,6 +15,9 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 /**
  * 开放 API 专用异常处理，只作用于 /open-api/**，与内部 GlobalExceptionHandler 互不干扰。
@@ -33,6 +38,44 @@ public class OpenApiExceptionHandler {
                 request.getHeader(OpenApiConstants.HEADER_APP_KEY), errorCode.getCode(), e.getMessage());
         return ResponseEntity.status(errorCode.getHttpStatus())
                 .body(OpenApiResult.error(errorCode.getCode(), e.getMessage(),
+                        OpenApiContextHolder.requestId(request)));
+    }
+
+    /**
+     * 订阅连接受限：409 要带 {@code snapshotUrl}（6.4 验收标准 ④），
+     * 429 只是"这个实例满了"，让客户端换实例重试。
+     */
+    @ExceptionHandler(EventStreamRejectedException.class)
+    public ResponseEntity<OpenApiResult<Map<String, Object>>> handleEventStream(
+            EventStreamRejectedException e, HttpServletRequest request) {
+        String rid = OpenApiContextHolder.requestId(request);
+        log.warn("[开放API] 订阅连接被拒 appKey={} reason={} msg={}",
+                request.getHeader(OpenApiConstants.HEADER_APP_KEY), e.getReason(), e.getMessage());
+        if (e.getReason() == EventStreamRejectedException.Reason.SATURATED) {
+            return ResponseEntity.status(OpenApiErrorCode.STREAM_LIMIT_EXCEEDED.getHttpStatus())
+                    .body(OpenApiResult.error(OpenApiErrorCode.STREAM_LIMIT_EXCEEDED.getCode(),
+                            e.getMessage(), null, rid));
+        }
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("snapshotUrl", e.getSnapshotUrl());
+        data.put("minSeq", e.getMinSeq());
+        data.put("maxSeq", e.getMaxSeq());
+        return ResponseEntity.status(OpenApiErrorCode.CURSOR_EXPIRED.getHttpStatus())
+                .body(OpenApiResult.error(OpenApiErrorCode.CURSOR_EXPIRED.getCode(),
+                        e.getMessage(), data, rid));
+    }
+
+    /**
+     * 请求的 scope 超出订阅授权范围：明确 403，不做静默裁剪
+     * （静默裁剪会让人以为"这个平台没资源"，3.12.5）。
+     */
+    @ExceptionHandler(EventScopeDeniedException.class)
+    public ResponseEntity<OpenApiResult<Void>> handleScopeDenied(EventScopeDeniedException e,
+                                                                 HttpServletRequest request) {
+        log.warn("[开放API] 越权查询 appKey={} msg={}",
+                request.getHeader(OpenApiConstants.HEADER_APP_KEY), e.getMessage());
+        return ResponseEntity.status(OpenApiErrorCode.SCOPE_DENIED.getHttpStatus())
+                .body(OpenApiResult.error(OpenApiErrorCode.SCOPE_DENIED.getCode(), e.getMessage(),
                         OpenApiContextHolder.requestId(request)));
     }
 

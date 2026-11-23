@@ -29,6 +29,10 @@ import {
   IconMovie,
   IconCalendarTime,
   IconUser,
+  IconSitemap,
+  IconHierarchy,
+  IconRefresh,
+  IconBroadcast,
   type Icon,
 } from '@tabler/icons-vue'
 import type { UserAuthResponse } from '@/types/api'
@@ -82,6 +86,10 @@ const ICON_REGISTRY: Record<string, Icon> = {
   IconSpeakerphone,
   IconMovie,
   IconCalendarTime,
+  IconSitemap,
+  IconHierarchy,
+  IconRefresh,
+  IconBroadcast,
 }
 
 /**

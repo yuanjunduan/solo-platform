@@ -5,6 +5,7 @@ import com.solo.gb28181.config.Gb28181Properties;
 import com.solo.gb28181.entity.GbDevice;
 import com.solo.gb28181.event.catalog.CatalogSyncProgressEvent;
 import com.solo.gb28181.mapper.GbDeviceMapper;
+import com.solo.gb28181.response.GbCatalogSyncVO;
 import com.solo.gb28181.transmit.cmd.SipCommander;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -15,6 +16,9 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
 import java.time.Duration;
+import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -57,6 +61,9 @@ public class CatalogSyncStatusService {
     private final Gb28181Properties properties;
 
     private static final Pattern RUNNING_PATTERN = Pattern.compile("\"status\":\"RUNNING\"");
+    private static final Pattern STATUS_PATTERN = Pattern.compile("\"status\":\"([A-Z]+)\"");
+    private static final Pattern FINISHED_PATTERN = Pattern.compile("\"finishedAt\":\"([^\"]*)\"");
+    private static final Pattern ERROR_MSG_PATTERN = Pattern.compile("\"errorMsg\":\"([^\"]*)\"");
     private static final Pattern LAST_UPDATE_PATTERN =
             Pattern.compile("\"lastUpdateAtMs\":(\\d+)");
     private static final Pattern STARTED_PATTERN = Pattern.compile("\"startedAtMs\":(\\d+)");
@@ -98,6 +105,46 @@ public class CatalogSyncStatusService {
             log.warn("[通道目录] 读同步状态失败 deviceId={} err={}", deviceId, e.getMessage());
             return null;
         }
+    }
+
+    /**
+     * 同步状态快照，给来源卡片内嵌展示用。
+     *
+     * <p>从未同步（Redis 无 key 或已过 30 分钟 TTL）返回 {@code status=IDLE} 的空快照，
+     * 调用方无需判空。JSON 由本类 {@code toJson} 生成、结构固定，沿用最小正则解析，
+     * 避免把 Jackson 依赖引进来。</p>
+     */
+    public GbCatalogSyncVO getSnapshot(String deviceId) {
+        GbCatalogSyncVO vo = new GbCatalogSyncVO();
+        String json = deviceId == null ? null : getRawStatus(deviceId);
+        if (json == null || json.isBlank()) {
+            return vo;
+        }
+        Matcher statusMatcher = STATUS_PATTERN.matcher(json);
+        if (statusMatcher.find()) {
+            vo.setStatus(statusMatcher.group(1));
+        }
+        vo.setReceived(matchLong(RECEIVED_PATTERN, json, 0L));
+        vo.setTotal(matchLong(TOTAL_PATTERN, json, 0L));
+        vo.setPercent(matchDouble(PERCENT_PATTERN, json, 0.0));
+        vo.setDuplicateCount(matchLong(DUPLICATE_PATTERN, json, 0L));
+        vo.setStartedAt(toLocalDateTime(matchLong(STARTED_PATTERN, json, 0L)));
+        vo.setLastUpdateAt(toLocalDateTime(matchLong(LAST_UPDATE_PATTERN, json, 0L)));
+        Matcher finished = FINISHED_PATTERN.matcher(json);
+        if (finished.find()) {
+            vo.setFinishedAt(finished.group(1));
+        }
+        Matcher error = ERROR_MSG_PATTERN.matcher(json);
+        if (error.find()) {
+            vo.setErrorMsg(error.group(1));
+        }
+        return vo;
+    }
+
+    private static LocalDateTime toLocalDateTime(long epochMs) {
+        return epochMs > 0
+                ? LocalDateTime.ofInstant(Instant.ofEpochMilli(epochMs), ZoneId.systemDefault())
+                : null;
     }
 
     /**

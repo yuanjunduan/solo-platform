@@ -8,6 +8,7 @@ import com.solo.gb28181.service.impl.CascadeSendService;
 import com.solo.gb28181.service.impl.GbBroadcastService;
 import com.solo.gb28181.sip.SipSubscribe;
 import com.solo.gb28181.support.CatalogSyncStatusService;
+import com.solo.gb28181.support.GbIdleReclaimService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -30,6 +31,7 @@ public class GbHealthScheduledTasks {
     private final GbBroadcastService gbBroadcastService;
     private final GbMobilePositionService mobilePositionService;
     private final CatalogSyncStatusService catalogSyncStatusService;
+    private final GbIdleReclaimService idleReclaimService;
     private final Gb28181Properties gb28181Properties;
 
     /** 设备离线检测：每 30s 扫库比对 Redis 在线 key，并清理目录分片缓存 */
@@ -71,10 +73,35 @@ public class GbHealthScheduledTasks {
         cascadeSendService.sweepAckTimeout();
     }
 
+    /**
+     * 源流巡检：源流长时间无 RTP / 已从节点消失时，逐个上级会话停推 + BYE，并回收来源侧（每 10s 扫一次）。
+     * <p>对端崩溃、拔网线、NAT 超时都不会发 BYE，只能靠这条兜底——阈值见
+     * {@code gb28181.cascade.rtp-timeout-sec}（默认 30s，&le;0 关闭）。</p>
+     */
+    @Scheduled(initialDelay = 20_000, fixedDelay = 10_000)
+    public void sweepCascadeZombieSources() {
+        int reaped = cascadeSendService.sweepZombieSources();
+        if (reaped > 0) {
+            log.warn("[级联点播] 源流巡检已清理僵尸源流 count={}", reaped);
+        }
+    }
+
     /** 语音广播：等设备反向 INVITE / ACK 超时的会话回收（每 10s 扫一次） */
     @Scheduled(initialDelay = 10_000, fixedDelay = 10_000)
     public void sweepBroadcastAckTimeout() {
         gbBroadcastService.sweepAckTimeout();
+    }
+
+    /**
+     * 点播/回放空闲回收：READY 会话连续无观看者超过 {@code gb28181.play.idle-reclaim-sec}
+     * （默认 120s，&le;0 关闭）就 BYE + 关流（3.11.3）。级联推流/语音广播消费中的流不算空闲。
+     */
+    @Scheduled(initialDelay = 30_000, fixedDelay = 10_000)
+    public void reapIdleInviteSessions() {
+        int reaped = idleReclaimService.reap();
+        if (reaped > 0) {
+            log.warn("[空闲回收] 已回收无观看者取流 count={}", reaped);
+        }
     }
 
     /** GPS 轨迹过期清理：每天凌晨 03:30 按保留天数删除旧轨迹点（retentionDays<=0 不清理） */

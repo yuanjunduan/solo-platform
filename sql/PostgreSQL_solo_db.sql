@@ -595,6 +595,41 @@ INSERT INTO gb_local_config (id, sip_id, sip_domain, sip_ip, sip_public_ip, sip_
 VALUES (1, '34020000002000000002', '3402000000', NULL, NULL, 5062, 'solo@1024')
 ON CONFLICT (id) DO NOTHING;
 
+DROP TABLE IF EXISTS gb_org;
+CREATE TABLE gb_org
+(
+    id          bigint NOT NULL,
+    parent_id   bigint NOT NULL DEFAULT 0,
+    name        varchar(64) NOT NULL,
+    code        varchar(20) DEFAULT NULL,
+    path        varchar(512) NOT NULL DEFAULT '',
+    level       int NOT NULL DEFAULT 1,
+    sort        int NOT NULL DEFAULT 0,
+    remark      varchar(255) DEFAULT NULL,
+    create_time timestamp(0) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    update_time timestamp(0) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (id)
+);
+COMMENT ON TABLE gb_org IS '本地组织树（仅本地域资源归属；与面向上级的推送分组 gb_platform_group 无关）';
+COMMENT ON COLUMN gb_org.id IS '主键ID';
+COMMENT ON COLUMN gb_org.parent_id IS '父组织主键，0=根';
+COMMENT ON COLUMN gb_org.name IS '组织名称';
+COMMENT ON COLUMN gb_org.code IS '组织国标编码（导入生成上级分组时写 215/216，可为空）';
+COMMENT ON COLUMN gb_org.path IS '物化路径 /根id/.../自身id/，子树查询用 LIKE 前缀';
+COMMENT ON COLUMN gb_org.level IS '层级，根=1';
+COMMENT ON COLUMN gb_org.sort IS '同级排序';
+COMMENT ON COLUMN gb_org.remark IS '备注';
+COMMENT ON COLUMN gb_org.create_time IS '创建时间';
+COMMENT ON COLUMN gb_org.update_time IS '更新时间';
+CREATE UNIQUE INDEX uk_gb_org_parent_name ON gb_org (parent_id, name);
+CREATE UNIQUE INDEX uk_gb_org_code ON gb_org (code);
+CREATE INDEX idx_gb_org_path ON gb_org (path);
+CREATE INDEX idx_gb_org_parent ON gb_org (parent_id);
+
+-- 预置根组织：本地设备/通道默认归属，id 固定 1（雪花 ID 不会与之冲突）
+INSERT INTO gb_org (id, parent_id, name, path, level, sort)
+VALUES (1, 0, '默认组织', '/1/', 1, 0) ON CONFLICT (id) DO NOTHING;
+
 DROP TABLE IF EXISTS gb_device;
 CREATE TABLE gb_device
 (
@@ -618,6 +653,8 @@ CREATE TABLE gb_device
     charset                      varchar(20) DEFAULT 'GB2312',
     status                       smallint DEFAULT 0,
     source                       smallint NOT NULL DEFAULT 3,
+    domain                       varchar(16) NOT NULL DEFAULT 'LOCAL',
+    org_id                       bigint DEFAULT NULL,
     register_time                timestamp(0) DEFAULT NULL,
     keepalive_time               timestamp(0) DEFAULT NULL,
     last_catalog_sync_time       timestamp(0) DEFAULT NULL,
@@ -646,15 +683,18 @@ COMMENT ON COLUMN gb_device.expires IS '注册有效期（秒）';
 COMMENT ON COLUMN gb_device.charset IS '字符集';
 COMMENT ON COLUMN gb_device.status IS '在线状态 0离线 1在线 2未注册';
 COMMENT ON COLUMN gb_device.source IS '数据来源 1新增 2导入 3注册';
+COMMENT ON COLUMN gb_device.domain IS '所属域 LOCAL本地 / SUBORDINATE下级平台 / REMOTE第三方资源平台';
+COMMENT ON COLUMN gb_device.org_id IS '所属本地组织 gb_org.id；仅 LOCAL 域有值';
 COMMENT ON COLUMN gb_device.register_time IS '最后注册时间';
 COMMENT ON COLUMN gb_device.keepalive_time IS '最后心跳时间';
 COMMENT ON COLUMN gb_device.last_catalog_sync_time IS '最后Catalog同步时间';
 COMMENT ON COLUMN gb_device.subscribe_cycle_for_catalog IS '目录订阅周期（秒），0=不订阅';
 COMMENT ON COLUMN gb_device.create_time IS '创建时间';
 COMMENT ON COLUMN gb_device.update_time IS '更新时间';
-CREATE UNIQUE INDEX uk_device_id ON gb_device (device_id);
+CREATE UNIQUE INDEX uk_domain_device ON gb_device (domain, device_id);
 CREATE INDEX idx_gb_device_status ON gb_device (status);
 CREATE INDEX idx_gb_device_source ON gb_device (source);
+CREATE INDEX idx_gb_device_domain_org ON gb_device (domain, org_id);
 
 DROP TABLE IF EXISTS gb_device_channel;
 CREATE TABLE gb_device_channel
@@ -662,6 +702,7 @@ CREATE TABLE gb_device_channel
     id            bigint NOT NULL,
     device_id     varchar(50) NOT NULL,
     platform_id   varchar(50) NOT NULL DEFAULT '',
+    org_id        bigint DEFAULT NULL,
     channel_id    varchar(50) NOT NULL,
     report_name   varchar(255) DEFAULT NULL,
     name          varchar(255) DEFAULT NULL,
@@ -696,6 +737,7 @@ CREATE TABLE gb_device_channel
 COMMENT ON COLUMN gb_device_channel.id IS '主键ID';
 COMMENT ON COLUMN gb_device_channel.device_id IS '所属设备国标ID（目录上报源）';
 COMMENT ON COLUMN gb_device_channel.platform_id IS '来源接入平台国标ID（发起 Catalog 的注册方，多下级平台据此区分通道归属）';
+COMMENT ON COLUMN gb_device_channel.org_id IS '组织归属覆盖值 gb_org.id；NULL=继承所属设备的 org_id';
 COMMENT ON COLUMN gb_device_channel.channel_id IS '通道/分组国标码';
 COMMENT ON COLUMN gb_device_channel.report_name IS '上报原始名称';
 COMMENT ON COLUMN gb_device_channel.name IS '自定义显示名称';
@@ -732,6 +774,7 @@ CREATE INDEX idx_gb_device_channel_parent_id ON gb_device_channel (parent_id);
 CREATE INDEX idx_device_tree_path ON gb_device_channel (device_id, parental, tree_path);
 CREATE INDEX idx_gb_device_channel_status ON gb_device_channel (status);
 CREATE INDEX idx_gb_device_channel_source ON gb_device_channel (source);
+CREATE INDEX idx_gb_device_channel_org ON gb_device_channel (org_id);
 
 DROP TABLE IF EXISTS gb_ptz_preset;
 CREATE TABLE gb_ptz_preset
@@ -817,6 +860,45 @@ COMMENT ON COLUMN gb_platform.enabled IS '0禁用 1放行';
 COMMENT ON COLUMN gb_platform.create_time IS '创建时间';
 COMMENT ON COLUMN gb_platform.update_time IS '更新时间';
 CREATE UNIQUE INDEX uk_platform_id ON gb_platform (platform_id);
+
+DROP TABLE IF EXISTS gb_platform_registry;
+CREATE TABLE gb_platform_registry
+(
+    id                     bigint NOT NULL,
+    platform_gb_id         varchar(50) NOT NULL,
+    direction              varchar(16) NOT NULL DEFAULT 'DOWNSTREAM',
+    kind                   varchar(16) NOT NULL DEFAULT 'PLATFORM',
+    name                   varchar(255) DEFAULT NULL,
+    sip_ip                 varchar(64) DEFAULT NULL,
+    sip_port               int DEFAULT NULL,
+    online_status          smallint DEFAULT 0,
+    last_catalog_sync_time timestamp(0) DEFAULT NULL,
+    channel_count          int NOT NULL DEFAULT 0,
+    group_count            int NOT NULL DEFAULT 0,
+    enabled                smallint NOT NULL DEFAULT 1,
+    remark                 varchar(255) DEFAULT NULL,
+    create_time            timestamp(0) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    update_time            timestamp(0) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (id)
+);
+COMMENT ON TABLE gb_platform_registry IS '级联平台登记簿：左树第二层根节点、同步进度与通道计数';
+COMMENT ON COLUMN gb_platform_registry.id IS '主键ID';
+COMMENT ON COLUMN gb_platform_registry.platform_gb_id IS '平台/接入端点国标码，等于 gb_device_channel.device_id（发起 Catalog 的端点）';
+COMMENT ON COLUMN gb_platform_registry.direction IS '级联方向 DOWNSTREAM下级 / UPSTREAM上级 / REMOTE第三方资源平台';
+COMMENT ON COLUMN gb_platform_registry.kind IS '端点类型 PLATFORM平台（11-13位=200）/ DEVICE接入设备或网关';
+COMMENT ON COLUMN gb_platform_registry.name IS '展示名称';
+COMMENT ON COLUMN gb_platform_registry.sip_ip IS '信令IP';
+COMMENT ON COLUMN gb_platform_registry.sip_port IS '信令端口';
+COMMENT ON COLUMN gb_platform_registry.online_status IS '在线状态 0离线 1在线 2未注册';
+COMMENT ON COLUMN gb_platform_registry.last_catalog_sync_time IS '最后Catalog同步时间';
+COMMENT ON COLUMN gb_platform_registry.channel_count IS '通道数（parental=0）';
+COMMENT ON COLUMN gb_platform_registry.group_count IS '分组数（parental=1）';
+COMMENT ON COLUMN gb_platform_registry.enabled IS '1启用 0停用（停用后左树不展示）';
+COMMENT ON COLUMN gb_platform_registry.remark IS '备注';
+COMMENT ON COLUMN gb_platform_registry.create_time IS '创建时间';
+COMMENT ON COLUMN gb_platform_registry.update_time IS '更新时间';
+CREATE UNIQUE INDEX uk_direction_gb_id ON gb_platform_registry (direction, platform_gb_id);
+CREATE INDEX idx_registry_direction ON gb_platform_registry (direction, enabled);
 
 DROP TABLE IF EXISTS media_server;
 CREATE TABLE media_server

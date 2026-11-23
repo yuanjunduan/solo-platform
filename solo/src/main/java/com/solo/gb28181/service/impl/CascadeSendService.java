@@ -1,21 +1,27 @@
 package com.solo.gb28181.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.solo.domain.resource.model.ResChannel;
+import com.solo.domain.resource.model.SourceType;
+import com.solo.domain.share.service.ShareCatalogService;
 import com.solo.gb28181.config.Gb28181Properties;
 import com.solo.gb28181.entity.CascadeSendSession;
-import com.solo.gb28181.entity.GbDeviceChannel;
 import com.solo.gb28181.entity.GbInviteSession;
 import com.solo.gb28181.entity.GbParentPlatform;
 import com.solo.gb28181.mapper.GbParentPlatformMapper;
+import com.solo.gb28181.request.InboundPlayRequest;
 import com.solo.gb28181.request.PlayStartRequest;
+import com.solo.gb28181.request.PlayStopRequest;
 import com.solo.gb28181.response.PlayResultResponse;
 import com.solo.gb28181.service.CascadeSendSessionService;
-import com.solo.gb28181.service.CatalogShareService;
 import com.solo.gb28181.service.GbInviteSessionCleanupService;
 import com.solo.gb28181.service.GbInviteSessionService;
 import com.solo.gb28181.service.GbParentPlatformService;
 import com.solo.gb28181.service.GbPlayService;
 import com.solo.gb28181.sip.SipSender;
+import com.solo.gb28181.support.CascadeSdpAddress;
+import com.solo.gb28181.support.GbInviteLiveness;
+import com.solo.gb28181.support.MediaHopGuard;
 import com.solo.gb28181.transmit.cmd.PlatformSipHeaderProvider;
 import com.solo.gb28181.transmit.cmd.SdpBuilder;
 import com.solo.gb28181.utils.SipUtils;
@@ -31,8 +37,11 @@ import org.springframework.stereotype.Service;
 
 import javax.sip.message.Request;
 import javax.sip.message.Response;
+import java.time.Duration;
 import java.time.LocalDateTime;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 级联被上级点播编排（本平台作为下级，上级发 INVITE 点播本平台共享通道）。
@@ -51,7 +60,7 @@ import java.util.List;
  * <h3>依赖说明</h3>
  * <p>本类作为级联点播唯一编排层，<b>必须</b>调下列业务方法，因此直接依赖这些 service：</p>
  * <ul>
- *   <li>{@link CatalogShareService#loadSharedChannels} — 共享通道 + 授权校验（跨表 JOIN，非 mapper 能替代）</li>
+ *   <li>{@link ShareCatalogService#resolveForPlay} — 上级码反查可见通道 + 授权校验（M4 出站三表）</li>
  *   <li>{@link CascadeSendSessionService} — 推流会话生命周期（CRUD + 端口分配，全 Redis 复合键）</li>
  *   <li>{@link GbInviteSessionService#getByStreamId} — 取流侧会话查询（Redis 实现，无 mapper）</li>
  *   <li>{@link GbPlayService#start} — 复用设备点播全链路</li>
@@ -67,9 +76,13 @@ public class CascadeSendService {
 
     private static final String LOG_TAG = "级联点播";
     private static final String APP = "rtp";
+    /** 预分配端口被占用时最多尝试次数（含首次）。见 D5：可用性优先，允许实际端口与 SDP 不一致 */
+    private static final int MAX_SEND_PORT_ATTEMPTS = 3;
+    /** lastRtpTime 最小回写间隔（秒）：巡检 10s 一轮，避免把整个会话 JSON 频繁重写 Redis */
+    private static final int LAST_RTP_WRITE_INTERVAL_SEC = 5;
 
     private final Gb28181Properties properties;
-    private final CatalogShareService catalogShareService;
+    private final ShareCatalogService shareCatalogService;
     private final CascadeSendSessionService sendSessionService;
     private final GbInviteSessionService inviteSessionService;
     private final GbParentPlatformService gbParentPlatformService;
@@ -80,10 +93,16 @@ public class CascadeSendService {
     private final PlatformSipHeaderProvider headerProvider;
     private final SipSender sipSender;
     private final GbParentPlatformMapper gbParentPlatformMapper;
+    private final MediaHopGuard mediaHopGuard;
 
     /**
      * 处理上级 INVITE：校验共享 → 取流 → 建会话 → 回 200 OK（sendonly SDP）。
      * <p>调用方（InviteRequestProcessor）已回过 100 Trying 且在业务线程池内执行。</p>
+     *
+     * <p><b>每跳独立互斥（6.6 / T5.3）</b>：这里持有的是"出站推流腿"，按「上级平台 + 上级看到的
+     * 通道编码」各持一把，与取流腿（{@code GbPlayServiceImpl} 按 streamId）互不影响。
+     * 上级 A 反复重试或断线，只冷却 A 自己这个 key，不会把 B 的点播一起锁死——
+     * 这正是"不能共用一个通道级锁"的原因。</p>
      */
     public void onUpstreamInvite(SIPRequest request, GbParentPlatform platform,
                                  String channelId, String upstreamSdp) {
@@ -92,12 +111,21 @@ public class CascadeSendService {
         String callId = callIdHeader.getCallId();
         String upstreamFromTag = request.getFromHeader().getTag();
 
-        // 1) 校验通道确已共享给该上级（loadSharedChannels 走 JOIN 且只筛 parental=0 通道，天然做授权 + 定位真实设备）
-        GbDeviceChannel channel = findSharedChannel(platform.getId(), channelId);
-        if (channel == null) {
+        // 1) 授权校验 + 反查（M4 出站三表）：撤销后、以及 DELETE 推送成功前，这里必须直接拒绝（C12 / C27）
+        ShareCatalogService.ExposedChannel resolved = findSharedChannel(platform.getId(), channelId);
+        if (resolved == null) {
             log.warn("[{}] 上级 {} 点播未共享/不存在的通道 上级通道编码:{} 原因:回 404",
                     LOG_TAG, platform.getServerGbId(), channelId);
             sendError(request, Response.NOT_FOUND, "channel not shared");
+            return;
+        }
+        // 会话里的 deviceId 只是排查线索：本地设备用设备国标码，入站通道用来源平台码（由 GbPlayService 解析）
+        boolean inbound = SourceType.INBOUND.equals(resolved.channel().getSourceType());
+        String localDeviceCode = resolved.device() == null ? null : resolved.device().getCode();
+        if (!inbound && (localDeviceCode == null || localDeviceCode.isBlank())) {
+            log.warn("[{}] 通道缺少可点播的设备编码 上级平台:{} 上级通道编码:{} 本平台通道id:{}",
+                    LOG_TAG, platform.getServerGbId(), channelId, resolved.channel().getId());
+            sendError(request, Response.NOT_FOUND, "device not ready");
             return;
         }
 
@@ -115,22 +143,64 @@ public class CascadeSendService {
             return;
         }
         log.info("[{}] 收到上级点播 上级平台:{} 上级通道编码:{} 本平台通道编码:{} 收流目标:{}:{} SSRC:{} 传输方式:{}",
-                LOG_TAG, platform.getServerGbId(), channelId, channel.getChannelId(), dstIp, dstPort, ssrc, transport);
+                LOG_TAG, platform.getServerGbId(), channelId, resolved.channel().getCode(),
+                dstIp, dstPort, ssrc, transport);
 
-        // 3) 向真实下级设备取流（阻塞等流就绪；复用设备点播全链路）
-        //    注意：上级来的 channelId 可能是 exposed_code，取流必须用真实通道原始 channelId + deviceId，
-        //    否则下级设备不认识 exposed_code。二者已由 findSharedChannel 解析到 channel 实体。
+        // 3) 每跳互斥 + 冷却：同一上级同一条通道同时只允许一次取流/推流编排
+        String hopKey = MediaHopGuard.outboundKey(platform.getId(), channelId);
+        long coolingMs = mediaHopGuard.cooldownRemainingMs(hopKey);
+        if (coolingMs > 0) {
+            long seconds = Math.max(1L, (coolingMs + 999L) / 1000L);
+            log.warn("[{}] 出站推流冷却中 上级平台:{} 上级通道编码:{} 剩余:{}s",
+                    LOG_TAG, platform.getServerGbId(), channelId, seconds);
+            sendError(request, Response.BUSY_HERE, "retry after " + seconds + "s");
+            return;
+        }
+        if (!mediaHopGuard.tryAcquire(hopKey)) {
+            log.warn("[{}] 出站推流已有请求在飞 上级平台:{} 上级通道编码:{}",
+                    LOG_TAG, platform.getServerGbId(), channelId);
+            sendError(request, Response.BUSY_HERE, "invite busy");
+            return;
+        }
+        try {
+            deliverUpstream(request, platform, channelId, resolved,
+                    new UpstreamMedia(dstIp, dstPort, ssrc, transport), callId, upstreamFromTag);
+        } catch (RuntimeException e) {
+            cooldownOutbound(platform, channelId);
+            throw e;
+        } finally {
+            mediaHopGuard.release(hopKey);
+        }
+    }
+
+    /** 上级 INVITE 里已校验过的媒体参数（c= / m= / y= / transport） */
+    private record UpstreamMedia(String dstIp, int dstPort, String ssrc, String transport) {
+    }
+
+    /**
+     * 出站推流主体（持锁后执行）：取流 → 建推流会话 → 回 200 OK。
+     */
+    private void deliverUpstream(SIPRequest request, GbParentPlatform platform, String channelId,
+                                 ShareCatalogService.ExposedChannel resolved, UpstreamMedia media,
+                                 String callId, String upstreamFromTag) {
+        ResChannel local = resolved.channel();
+        boolean inbound = SourceType.INBOUND.equals(local.getSourceType());
+        String localChannelCode = local.getCode();
+        String localDeviceCode = resolved.device() == null ? null : resolved.device().getCode();
+        String dstIp = media.dstIp();
+        int dstPort = media.dstPort();
+        String ssrc = media.ssrc();
+        String transport = media.transport();
+
+        // 取流（阻塞等流就绪）：本地通道复用设备点播，入站通道向来源平台点播
+        //    注意：上级来的 channelId 是暴露码，取流必须用原始编码，否则对端不认识暴露码
         PlayResultResponse play;
         try {
-            PlayStartRequest req = new PlayStartRequest();
-            req.setDeviceId(channel.getDeviceId());
-            req.setChannelId(channel.getChannelId());
-            req.setTransport(null);        // 取流侧传输由默认策略决定，与上级收流传输无关
-            req.setStreamNumber(null);     // 级联点播固定主码流
-            play = playService.start(req);
+            play = inbound ? playInbound(local) : playLocal(localDeviceCode, localChannelCode);
         } catch (Exception e) {
             log.warn("[{}] 取流失败 上级平台:{} 上级通道编码:{} 本平台通道编码:{} 错误:{}",
-                    LOG_TAG, platform.getServerGbId(), channelId, channel.getChannelId(), e.getMessage(), e);
+                    LOG_TAG, platform.getServerGbId(), channelId, localChannelCode, e.getMessage(), e);
+            cooldownOutbound(platform, channelId);
             sendError(request, Response.BUSY_HERE, "fetch stream failed");
             return;
         }
@@ -138,11 +208,30 @@ public class CascadeSendService {
         MediaServer server = mediaServer(play.getMediaServerId());
         if (server == null) {
             log.error("[{}] 取流就绪但节点丢失 节点ID:{}", LOG_TAG, play.getMediaServerId());
+            cooldownOutbound(platform, channelId);
             sendError(request, Response.SERVER_INTERNAL_ERROR, "media server lost");
             return;
         }
 
-        // 4) 建推流会话
+        // 4) 解析回给上级的媒体地址（C21a）：必须是本平台对外可达地址，绝不透传上级 SDP 里的 c=
+        String sdpIp = CascadeSdpAddress.resolve(
+                properties.getCascade().getSdpPublicIp(), server.getStreamIp(), server.getHostIp());
+        if (sdpIp == null) {
+            log.error("[{}] 媒体节点无可用对外地址，拒绝点播 节点:{} streamIp:{} hostIp:{} sdpPublicIp:{}，"
+                            + "请配置 gb28181.cascade.sdp-public-ip",
+                    LOG_TAG, server.getServerId(), server.getStreamIp(), server.getHostIp(),
+                    properties.getCascade().getSdpPublicIp());
+            stopFetchedStreamIfUnused(server, play.getStreamId());
+            cooldownOutbound(platform, channelId);
+            sendError(request, Response.SERVER_INTERNAL_ERROR, "media address not configured");
+            return;
+        }
+        if (CascadeSdpAddress.isPrivate(sdpIp)) {
+            log.warn("[{}] 回给上级的媒体地址是私网 {}，上级不在同一内网将不可达；可配置 gb28181.cascade.sdp-public-ip",
+                    LOG_TAG, sdpIp);
+        }
+
+        // 5) 建推流会话
         String localToTag = SipUtils.newToTag();
         CascadeSendSession session = new CascadeSendSession();
         session.setSendStreamId("send_" + callId);
@@ -151,8 +240,8 @@ public class CascadeSendService {
         session.setPlatformServerGbId(platform.getServerGbId());
         session.setLocalGbId(properties.getId());
         session.setChannelId(channelId);
-        session.setLocalChannelId(channel.getChannelId());
-        session.setDeviceId(channel.getDeviceId());
+        session.setLocalChannelId(localChannelCode);
+        session.setDeviceId(localDeviceCode);
         session.setSrcApp(APP);
         session.setSrcStream(play.getStreamId());
         session.setDstIp(dstIp);
@@ -163,39 +252,44 @@ public class CascadeSendService {
         session.setFromTag(upstreamFromTag);
         session.setToTag(localToTag);
         session.setStatus(CascadeSendSession.STATUS_WAIT_ACK);
+        session.setSdpRewritten(true);
         session.setCreateTime(LocalDateTime.now());
 
-        // 5) TCP 主动（上级来连本平台）：先开监听端口拿到本地端口，写进回复 SDP
-        int sendPort = 0;
+        // 6) 决定回给上级的 m= 端口（C21a：UDP / TCP 被动时也不能为 0——RFC 4566 中 0 表示禁用该媒体流）
+        //    TCP 主动（上级来连本平台）：端口必须真实，先开监听
+        //    UDP / TCP 被动（本平台直推 / 主动去连上级）：先预分配，ACK 时复用同一端口
+        int sendPort;
         boolean upstreamActive = session.isUpstreamActive();
         if (upstreamActive) {
             try {
                 sendPort = zlmRestClient.startSendRtpPassive(server, APP, play.getStreamId(), ssrc);
-                session.setLocalSendPort(sendPort);
                 session.setStatus(CascadeSendSession.STATUS_SENDING);
                 session.setSendTime(LocalDateTime.now());
             } catch (Exception e) {
                 log.error("[{}] startSendRtpPassive 失败 流ID:{} 错误:{}",
                         LOG_TAG, play.getStreamId(), e.getMessage(), e);
+                cooldownOutbound(platform, channelId);
                 sendError(request, Response.SERVER_INTERNAL_ERROR, "passive listen failed");
                 return;
             }
+        } else {
+            sendPort = sendPortInRange();
         }
+        session.setLocalSendPort(sendPort);
 
         sendSessionService.save(session);
 
-        // 6) 回 200 OK（sendonly SDP）
-        String sdpIp = server.getStreamIp() != null && !server.getStreamIp().isBlank()
-                ? server.getStreamIp() : server.getHostIp();
+        // 7) 回 200 OK（sendonly SDP，地址与端口均由本平台构造）
         String answer = SdpBuilder.buildSendAnswer(properties.getId(), sdpIp, sendPort, ssrc, transport);
         try {
             SIPResponse ok = headerProvider.buildInviteOk(platform, request, answer, localToTag);
             sipSender.send(request.getLocalAddress().getHostAddress(), ok);
-            log.info("[{}] 回 200 OK 上级平台:{} 本平台通道编码:{} 源流ID:{} 传输方式:{} 待ACK:{}",
-                    LOG_TAG, platform.getServerGbId(), channel.getChannelId(), play.getStreamId(),
-                    transport, !upstreamActive);
+            log.info("[{}] 回 200 OK 上级平台:{} 本平台通道编码:{} 源流ID:{} 媒体地址:{}:{} 传输方式:{} 待ACK:{}",
+                    LOG_TAG, platform.getServerGbId(), localChannelCode, play.getStreamId(),
+                    sdpIp, sendPort, transport, !upstreamActive);
         } catch (Exception e) {
             log.error("[{}] 回 200 OK 失败 Call-ID:{} 错误:{}", LOG_TAG, callId, e.getMessage(), e);
+            cooldownOutbound(platform, channelId);
             cleanup(session, true);
         }
     }
@@ -221,16 +315,14 @@ public class CascadeSendService {
         try {
             // 站在上级视角：TCP-passive 表示上级等本平台去连 → 本平台主动去连（is_udp=0）；UDP 直推
             boolean udp = !session.isTcp();
-            Integer srcPort = sendPortInRange();
-            int localPort = zlmRestClient.startSendRtp(server, session.getSrcApp(), session.getSrcStream(),
-                    session.getSsrc(), session.getDstIp(), session.getDstPort(), udp, srcPort);
-            session.setLocalSendPort(localPort > 0 ? localPort : srcPort);
+            int localPort = startSendRtpWithPortFallback(session, server, udp);
+            session.setLocalSendPort(localPort);
             session.setStatus(CascadeSendSession.STATUS_SENDING);
             session.setSendTime(LocalDateTime.now());
             sendSessionService.update(session);
-            log.info("[{}] startSendRtp 已推流 上级平台:{} 本平台通道编码:{} 目的:{}:{} UDP:{}",
+            log.info("[{}] startSendRtp 已推流 上级平台:{} 本平台通道编码:{} 目的:{}:{} UDP:{} 本地端口:{}",
                     LOG_TAG, session.getPlatformServerGbId(), session.getLocalChannelId(),
-                    session.getDstIp(), session.getDstPort(), udp);
+                    session.getDstIp(), session.getDstPort(), udp, localPort);
         } catch (Exception e) {
             log.error("[{}] startSendRtp 失败 Call-ID:{} 错误:{}", LOG_TAG, callId, e.getMessage(), e);
             cleanup(session, true);
@@ -276,7 +368,135 @@ public class CascadeSendService {
         }
     }
 
+    /**
+     * 源流巡检（C21c：按源流判活，不靠信令）：源流已死就逐个上级会话<b>先停推再发 BYE</b>，最后回收来源侧。
+     *
+     * <p>触发条件来自 {@link GbInviteLiveness} 的采样结论，只处理 READY 状态的实时点播/回放会话
+     * （INVITING 还没起流；DOWNLOAD / RECORD 是 TCP 文件流，本就没有连续 RTP）。
+     * 每轮每节点只查一次 {@code getMediaList}，不按会话重复问 ZLM。</p>
+     *
+     * @return 本轮判定并清理的源流条数（供日志用）
+     */
+    public int sweepZombieSources() {
+        long timeoutSec = properties.getCascade().getRtpTimeoutSec();
+        if (timeoutSec <= 0) {
+            return 0;
+        }
+        List<GbInviteSession> actives = inviteSessionService.listAllActive();
+        if (actives == null || actives.isEmpty()) {
+            return 0;
+        }
+        LocalDateTime now = LocalDateTime.now();
+        Map<String, List<JsonNode>> mediaByServer = new HashMap<>();
+        int reaped = 0;
+        for (GbInviteSession invite : actives) {
+            try {
+                if (!isLivenessJudgeable(invite)) {
+                    continue;
+                }
+                MediaServer server = mediaServer(invite.getServerId());
+                if (server == null) {
+                    continue;
+                }
+                GbInviteLiveness.Probe probe =
+                        GbInviteLiveness.probe(mediaOf(mediaByServer, server), APP, invite.getStreamId());
+                switch (probe) {
+                    case UNREACHABLE -> {
+                        // 节点问不到：本轮整体放行，绝不以"查不到"当"流已死"
+                        log.debug("[{}] 源流巡检跳过：节点不可达 节点:{} 流ID:{}",
+                                LOG_TAG, server.getServerId(), invite.getStreamId());
+                        continue;
+                    }
+                    case FLOWING -> {
+                        touchLastRtpTime(invite, now);
+                        continue;
+                    }
+                    case WATCHED -> {
+                        // 有本地观看者时不判死：HLS 拉流、暂停、切片刷新都会出现瞬时 0 码流
+                        continue;
+                    }
+                    case GONE, SILENT -> {
+                        if (!GbInviteLiveness.isZombie(invite.getLastRtpTime(), invite.getReadyTime(), now, timeoutSec)) {
+                            continue;
+                        }
+                        reapZombieSource(invite, probe);
+                        reaped++;
+                    }
+                }
+            } catch (Exception e) {
+                log.warn("[{}] 源流巡检异常 流ID:{} 错误:{}", LOG_TAG, invite.getStreamId(), e.getMessage(), e);
+            }
+        }
+        return reaped;
+    }
+
     // ---------------- helpers ----------------
+
+    /** 只有"已就绪、且靠连续 RTP 维持"的会话才参与判死；DOWNLOAD/RECORD 是 TCP 文件流，不适用 */
+    private static boolean isLivenessJudgeable(GbInviteSession s) {
+        if (s == null || s.getStreamId() == null || s.getStreamId().isBlank()) {
+            return false;
+        }
+        if (!GbInviteSession.STATUS_READY.equals(s.getStatus())) {
+            return false;
+        }
+        if (s.getReadyTime() == null && s.getLastRtpTime() == null) {
+            return false;
+        }
+        String type = s.getSessionType();
+        return !GbInviteSession.TYPE_DOWNLOAD.equals(type) && !GbInviteSession.TYPE_RECORD.equals(type);
+    }
+
+    /** 每轮每节点只问一次 ZLM；不可达节点把 {@code null} 也缓存下来，避免同轮反复重试 */
+    private List<JsonNode> mediaOf(Map<String, List<JsonNode>> cache, MediaServer server) {
+        if (cache.containsKey(server.getServerId())) {
+            return cache.get(server.getServerId());
+        }
+        List<JsonNode> media = zlmRestClient.getMediaListOrNull(server);
+        cache.put(server.getServerId(), media);
+        return media;
+    }
+
+    /**
+     * 刷新 {@code lastRtpTime}。巡检 10s 一轮，但只有推进够一定幅度才落 Redis，
+     * 避免把整个会话 JSON 每秒重写一遍。
+     */
+    private void touchLastRtpTime(GbInviteSession invite, LocalDateTime now) {
+        LocalDateTime last = invite.getLastRtpTime();
+        if (last != null && Duration.between(last, now).getSeconds() < LAST_RTP_WRITE_INTERVAL_SEC) {
+            return;
+        }
+        invite.setLastRtpTime(now);
+        try {
+            inviteSessionService.update(invite);
+        } catch (Exception e) {
+            log.warn("[{}] 回写 lastRtpTime 失败 流ID:{} 错误:{}", LOG_TAG, invite.getStreamId(), e.getMessage());
+        }
+    }
+
+    /**
+     * 源流已死：按 {@code by_src} 索引反查所有上级会话，逐个走 {@link #cleanup}（内含
+     * <b>先 stopSendRtp 再 BYE</b> 的顺序，反了会出现"BYE 已发、推流还在"的窗口）。
+     *
+     * <p>来源侧不在本方法里额外清理：{@code cleanup} 的最后一跳在"没有其它上级在推、且本地无人观看"时
+     * 已经回收来源侧；若这次因为"还有观看者"没回收，下一轮巡检仍会命中同一个源流并补上，
+     * 自愈比在这里硬清更安全（硬清可能把有人正在看的流一起掐掉）。</p>
+     */
+    private void reapZombieSource(GbInviteSession invite, GbInviteLiveness.Probe probe) {
+        String reason = probe == GbInviteLiveness.Probe.GONE ? "源流已从节点消失" : "源流长时间无 RTP";
+        List<CascadeSendSession> sessions = sendSessionService.listBySrcStream(invite.getStreamId());
+        if (sessions == null || sessions.isEmpty()) {
+            log.warn("[{}] {}，无上级在推，直接回收来源侧 流ID:{} 设备:{} 通道:{}",
+                    LOG_TAG, reason, invite.getStreamId(), invite.getDeviceId(), invite.getChannelId());
+            support.timeoutSession(invite, LOG_TAG, reason);
+            return;
+        }
+        log.warn("[{}] {}，逐个停推并 BYE 上级 流ID:{} 上级会话数:{}",
+                LOG_TAG, reason, invite.getStreamId(), sessions.size());
+        for (CascadeSendSession session : sessions) {
+            cleanup(session, true);
+        }
+    }
 
     /**
      * 统一清理：stopSendRtp → 删会话 → BYE 上级(可选) → 无人观看时停取流。
@@ -335,30 +555,36 @@ public class CascadeSendService {
     }
 
     /**
-     * 从 loadSharedChannels（仅 parental=0 通道）结果里定位上级点播的真实通道（含共享授权校验）。
-     * <p>上级 INVITE 带的 channelId 是本平台对它暴露的码：优先按 exposed_code 精确匹配（平台唯一，
-     * 跨设备/级联撞码也能唯一定位）；未命中再回退按原始 channelId 匹配（兼容未分配 exposed_code 的存量，
-     * 但存量撞码时只能取第一条并告警）。</p>
+     * 上级编码 → 可见通道（M4 出站三表反查，含共享授权校验）。
+     * <p>上级 INVITE 带的是本平台对它暴露的码（本地透传时等于原始码，撞码时是重分配的暴露码），
+     * 反查链 {@code out_code_map → out_share(visible, ref_alive=1) → res_channel} 任何一环缺失都返回 null，
+     * 由调用方回 404 拒绝——撤销后到 DELETE 推送成功前，上级仍可能点播，此时必须直接拒绝（C12）。</p>
      */
-    private GbDeviceChannel findSharedChannel(Long platformDbId, String channelId) {
-        List<GbDeviceChannel> shared = catalogShareService.loadSharedChannels(platformDbId);
-        if (shared == null) return null;
-        // 1) 优先 exposed_code 精确匹配
-        GbDeviceChannel byExposed = shared.stream()
-                .filter(c -> channelId.equals(c.getExposedCode()))
-                .findFirst()
-                .orElse(null);
-        if (byExposed != null) return byExposed;
-        // 2) 回退原始 channelId（存量兼容）
-        List<GbDeviceChannel> byRaw = shared.stream()
-                .filter(c -> channelId.equals(c.getChannelId()))
-                .toList();
-        if (byRaw.isEmpty()) return null;
-        if (byRaw.size() > 1) {
-            log.error("[{}] 上级点播 上级通道编码:{} 按原始码命中 {} 条(撞码且未分配 exposed_code)，取第一条，可能推错流",
-                    LOG_TAG, channelId, byRaw.size());
+    private ShareCatalogService.ExposedChannel findSharedChannel(Long platformDbId, String channelId) {
+        ShareCatalogService.ExposedChannel resolved = shareCatalogService.resolveForPlay(platformDbId, channelId);
+        if (resolved == null) {
+            log.warn("[{}] 上级点播 上级通道编码:{} 未共享给该上级或资源已消失/已撤销", LOG_TAG, channelId);
         }
-        return byRaw.getFirst();
+        return resolved;
+    }
+
+    /** 本地通道：走设备点播全链路（deviceId / channelId 都是设备侧国标码） */
+    private PlayResultResponse playLocal(String deviceCode, String channelCode) {
+        PlayStartRequest req = new PlayStartRequest();
+        req.setDeviceId(deviceCode);
+        req.setChannelId(channelCode);
+        req.setTransport(null);        // 取流侧传输由默认策略决定，与上级收流传输无关
+        req.setStreamNumber(null);     // 级联点播固定主码流
+        return playService.start(req);
+    }
+
+    /** 入站通道：对端平台就是"设备"，按行 id 反查来源平台后向对端 INVITE（3.7.4） */
+    private PlayResultResponse playInbound(ResChannel channel) {
+        InboundPlayRequest req = new InboundPlayRequest();
+        req.setChannelRowId(String.valueOf(channel.getId()));
+        req.setTransport(null);
+        req.setStreamNumber(null);
+        return playService.startInbound(req);
     }
 
     private MediaServer mediaServer(String serverId) {
@@ -366,10 +592,83 @@ public class CascadeSendService {
                 new LambdaQueryWrapper<MediaServer>().eq(MediaServer::getServerId, serverId));
     }
 
+    /** 给"上级 + 上级通道编码"这条出站腿记冷却；冷却时长 &le; 0 时由守卫自己忽略 */
+    private void cooldownOutbound(GbParentPlatform platform, String channelId) {
+        mediaHopGuard.cooldown(MediaHopGuard.outboundKey(platform.getId(), channelId),
+                properties.getCascade().getHopCooldownSec() * 1000L);
+    }
+
     private Integer sendPortInRange() {
         return sendSessionService.acquireSendPort(
                 properties.getCascade().getSendRtpPortStart(),
                 properties.getCascade().getSendRtpPortEnd());
+    }
+
+    /**
+     * 按回 200 OK 时预分配的端口推流；端口被占则换下一个重试（最多 {@value #MAX_SEND_PORT_ATTEMPTS} 次）。
+     *
+     * <p>为什么允许"实际端口 ≠ SDP 里的端口"：UDP 下上级是按<b>自己</b> INVITE 声明的 {@code c=} / {@code m=} 收流，
+     * 不校验本平台的源端口；TCP 被动同理（本平台是连接发起方，源端口由系统分配）。
+     * 换端口只影响排障时对不上号，不影响收流，所以可用性优先（决策 D5）。
+     * 唯一的例外是 TCP 主动——那条路径在回 200 前就已开好监听，端口必然真实。</p>
+     *
+     * <p>顺序要求：本方法只在 ACK 到达后调用，此时 200 OK 已发出。</p>
+     */
+    private int startSendRtpWithPortFallback(CascadeSendSession session, MediaServer server, boolean udp)
+            throws Exception {
+        Integer preferred = session.getLocalSendPort();
+        Integer srcPort = preferred != null && preferred > 0 ? preferred : sendPortInRange();
+        for (int attempt = 0; attempt < MAX_SEND_PORT_ATTEMPTS; attempt++) {
+            try {
+                int localPort = zlmRestClient.startSendRtp(server, session.getSrcApp(), session.getSrcStream(),
+                        session.getSsrc(), session.getDstIp(), session.getDstPort(), udp, srcPort);
+                int actual = localPort > 0 ? localPort : srcPort;
+                if (attempt > 0) {
+                    log.warn("[{}] 预分配端口 {} 不可用，已改用 {}（回给上级的 SDP 仍写 {}，UDP/TCP被动下不影响上级收流）",
+                            LOG_TAG, preferred, actual, preferred);
+                }
+                return actual;
+            } catch (Exception e) {
+                if (!isPortConflict(e) || attempt == MAX_SEND_PORT_ATTEMPTS - 1) {
+                    throw e;
+                }
+                log.warn("[{}] 推流端口 {} 冲突，换端口重试 第{}次 错误:{}",
+                        LOG_TAG, srcPort, attempt + 1, e.getMessage());
+                srcPort = sendPortInRange();
+            }
+        }
+        throw new IllegalStateException("startSendRtp 端口重试耗尽");
+    }
+
+    /**
+     * 判断异常是否由本地端口占用引起。只有这类错误值得换端口重试；
+     * "流不存在""对端不可达"之类换端口也不会好，必须原样抛出交给上层清理。
+     */
+    private static boolean isPortConflict(Throwable e) {
+        String msg = e.getMessage() == null ? "" : e.getMessage().toLowerCase();
+        return msg.contains("already in use")
+                || msg.contains("address already")
+                || msg.contains("bind")
+                || msg.contains("端口");
+    }
+
+    /**
+     * 点播中止时回收已拉起的取流。<b>只在没有其它观看者时执行</b>——
+     * 否则会把本地正在预览/回放的同一路流一起停掉（同一通道 10 人只拉一路，见 3.11.3）。
+     */
+    private void stopFetchedStreamIfUnused(MediaServer server, String streamId) {
+        try {
+            if (streamHasReader(server, streamId)) {
+                log.info("[{}] 取流回收跳过：仍有其它观看者 流ID:{}", LOG_TAG, streamId);
+                return;
+            }
+            PlayStopRequest stop = new PlayStopRequest();
+            stop.setStreamId(streamId);
+            playService.stop(stop);
+            log.info("[{}] 点播中止，已回收取流 流ID:{}", LOG_TAG, streamId);
+        } catch (Exception e) {
+            log.warn("[{}] 回收取流失败(忽略) 流ID:{} 错误:{}", LOG_TAG, streamId, e.getMessage());
+        }
     }
 
     /**

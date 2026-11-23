@@ -23,6 +23,12 @@ public class GbRecordFileVO {
 
     private String channelName;
 
+    @Schema(description = "ZLM 流 ID（排查录制链路用）")
+    private String streamId;
+
+    @Schema(description = "最近一次上传失败原因，仅失败时有值")
+    private String failReason;
+
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
     private LocalDateTime startTime;
 

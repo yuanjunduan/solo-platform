@@ -247,6 +247,9 @@
                 <configuration>
                     <release>21</release>
                     <encoding>UTF-8</encoding>
+                    <!-- JDK 23+ 默认不再隐式启动注解处理，Lombok 会失效（全量报“找不到符号 log/getter”）。
+                         显式声明 full，命令行 mvn compile 才能正确生成 getter/setter/@Slf4j 成员。 -->
+                    <proc>full</proc>
                 </configuration>
             </plugin>
             <plugin>

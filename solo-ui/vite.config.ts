@@ -22,12 +22,11 @@ export default defineConfig({
   },
   server: {
     host: '127.0.0.1',
-    // 主项目前端占 5173，本实例错开到 5174
-    port: 5174,
+    port: 5173,
     proxy: {
       '/api': {
-        // 上级域实例后端在本机 8081（主实例是 8080），DB/Redis/MinIO 等组件在 192.168.118.229
-        target: 'http://localhost:8081',
+        // 后端跑在本机开发环境（localhost:8080），DB/Redis/MinIO 等组件在 192.168.118.229
+        target: 'http://localhost:8080',
         changeOrigin: true,
         ws: true,
       },

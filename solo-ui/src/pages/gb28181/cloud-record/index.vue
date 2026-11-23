@@ -196,7 +196,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { IconLoader2, IconMovie, IconX, IconFilter } from '@tabler/icons-vue'
 import RefreshButton from '@/components/RefreshButton.vue'
 import Button from '@/components/ui/button/Button.vue'
-import { Select, SelectContent, SelectItem, SelectValue } from '@/components/ui/select'
+import { Select, SelectContent, SelectItem } from '@/components/ui/select'
 import { SelectTrigger as RawSelectTrigger } from 'reka-ui'
 import GbDeviceSelect from '@/features/gb/GbDeviceSelect.vue'
 import GbChannelSelect from '@/features/gb/GbChannelSelect.vue'
@@ -347,8 +347,8 @@ const onGlobalKeydown = (e: KeyboardEvent) => {
       scrollCursorIntoView()
       break
     case 'Enter':
-      // 检视器或弹窗打开时不抢占回车
-      if (selected.value || startOpen.value || recordingOpen.value) return
+      // 检视器打开时不抢占回车
+      if (selected.value) return
       if (list[cursor.value]) onRowClick(list[cursor.value], cursor.value)
       break
   }

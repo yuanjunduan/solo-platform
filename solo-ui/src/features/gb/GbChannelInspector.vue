@@ -206,9 +206,9 @@
           <template v-else>
             <button
               v-access="PERM.GB_PLAY"
-              title="播放"
+              :title="isRemote ? '第三方资源平台共享通道，仅支持目录查看' : '播放'"
               class="absolute inset-0 m-auto grid size-12 place-items-center rounded-full bg-black/50 text-white/85 transition-colors hover:bg-black/70 hover:text-white disabled:opacity-60"
-              :disabled="playLoading"
+              :disabled="playLoading || isRemote"
               @click="startPlay"
             >
               <IconPlayerPlay v-if="!playLoading" class="ml-0.5 size-6" />
@@ -218,8 +218,9 @@
             <!-- 回放：无需先点播即可进入 -->
             <button
               v-access="PERM.GB_PLAY"
-              title="回放"
-              class="absolute bottom-2 right-12 grid h-8 w-8 place-items-center rounded text-white/70 transition-colors hover:text-white"
+              :title="isRemote ? '第三方资源平台共享通道，暂无回放能力' : '回放'"
+              class="absolute bottom-2 right-12 grid h-8 w-8 place-items-center rounded text-white/70 transition-colors hover:text-white disabled:opacity-40"
+              :disabled="isRemote"
               @click="onOpenPlayback"
             >
               <IconHistory class="h-4 w-4" />
@@ -228,8 +229,9 @@
             <!-- 大窗口监控：无需先点播即可进入 -->
             <button
               v-access="PERM.GB_PLAY"
-              title="大窗口监控"
-              class="absolute bottom-2 right-2 grid h-8 w-8 place-items-center rounded text-white/70 transition-colors hover:text-white"
+              :title="isRemote ? '第三方资源平台共享通道，暂不支持监控' : '大窗口监控'"
+              class="absolute bottom-2 right-2 grid h-8 w-8 place-items-center rounded text-white/70 transition-colors hover:text-white disabled:opacity-40"
+              :disabled="isRemote"
               @click="onOpenMonitor"
             >
               <IconArrowsMaximize class="h-4 w-4" />
@@ -237,6 +239,9 @@
           </template>
         </div>
 
+        <p v-if="isRemote" class="mt-1.5 text-[11px] text-muted-foreground">
+          该通道来自第三方资源平台（远程域），本期仅提供目录查看，暂不支持点播/回放。
+        </p>
         <p v-if="playError" class="mt-1.5 text-[11px] text-destructive">{{ playError }}</p>
       </section>
     </template>
@@ -426,6 +431,9 @@ const channelName = computed(
   () => props.channel?.name || props.channel?.reportName || props.channel?.channelId || '',
 )
 
+/** 远程域（第三方资源平台）通道：本期只有目录，点播/回放链路未接，入口一律禁用 */
+const isRemote = computed(() => props.channel?.domain === 'REMOTE')
+
 const errors = reactive({ deviceId: '', channelId: '', name: '' })
 
 const validate = () => {
@@ -523,6 +531,10 @@ let playSession: GbPlayResult | null = null
 
 const startPlay = async () => {
   if (!props.channel || playLoading.value) return
+  if (isRemote.value) {
+    playError.value = '该通道来自第三方资源平台（远程域），本期仅提供目录查看，暂不支持点播'
+    return
+  }
   playLoading.value = true
   playError.value = ''
   try {

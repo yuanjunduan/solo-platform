@@ -5,6 +5,7 @@ import com.solo.gb28181.config.Gb28181Properties;
 import com.solo.gb28181.entity.GbDevice;
 import com.solo.gb28181.entity.GbDeviceChannel;
 import com.solo.gb28181.event.catalog.CatalogSyncProgressEvent;
+import com.solo.gb28181.inbound.Gb28181CatalogTap;
 import com.solo.gb28181.processor.request.message.MessageHandler;
 import com.solo.gb28181.service.GbDeviceChannelService;
 import com.solo.gb28181.service.GbDeviceService;
@@ -39,6 +40,8 @@ public class CatalogResponseMessageHandler implements MessageHandler {
     private final ApplicationEventPublisher eventPublisher;
     /** 本平台国标编码（接收侧身份），日志里与本下级平台的 deviceId 对照打印 */
     private final Gb28181Properties gb28181Properties;
+    /** 新资源同步链路的投递口（旁路：没有活跃轮次时它是空转的） */
+    private final Gb28181CatalogTap inboundCatalogTap;
 
     @Lazy
     @Autowired
@@ -73,6 +76,8 @@ public class CatalogResponseMessageHandler implements MessageHandler {
 
         if (sumNum == 0) {
             log.info("[通道目录] 设备无通道 deviceId={}", device.getDeviceId());
+            // 新链路（资源同步）也要知道"本轮收齐了"，否则它会一直等不到 SumNum
+            inboundCatalogTap.onEmptyCatalog(device.getDeviceId());
             // 设备通告空目录：清理并记录 lastCatalogSyncTime（只更这一个字段，避免覆盖并发写入的 DeviceInfo）
             channelService.deleteByDeviceId(device.getDeviceId());
             deviceService.update(new LambdaUpdateWrapper<GbDevice>()
@@ -169,6 +174,10 @@ public class CatalogResponseMessageHandler implements MessageHandler {
         // 累加分片（内部阈值 flush；sumNum 收齐时返回 true）
         boolean complete = cache.accumulate(ctx, chunkItems, declaredNum);
 
+        // 旁路投递到资源同步链路：放在旧链路落库之后、判定之前，旧链路行为不变；
+        // 没有活跃轮次时 onBatch 直接返回（空转）
+        inboundCatalogTap.onBatch(device.getDeviceId(), sumNum, declaredNum, chunkItems);
+
         if (complete) {
             // 收齐分支已在 accumulate 内 finalize，这里仅记录日志
             log.info("[通道目录] 本片触发收齐 deviceId={} sn={}", device.getDeviceId(), sn);
@@ -225,6 +234,12 @@ public class CatalogResponseMessageHandler implements MessageHandler {
             if (info != null) {
                 ch.setPtzType(parseInt(XmlUtils.childText(info, "PTZType"), 0));
             }
+            // 全局身份（3.9.3）：本项目把扩展元素放在 <Info> 内，个别厂商会写在外层，两层都读。
+            // 解析不出就保持空——由投递口按"直接来源"降级，绝不猜测上游身份。
+            ch.setOriginPlatformCode(infoText(item, info, "OriginPlatformId"));
+            ch.setOriginCode(infoText(item, info, "OriginCode"));
+            ch.setOriginChain(infoText(item, info, "OriginChain"));
+            ch.setHopCount(parseIntOrNull(infoText(item, info, "HopCount")));
         } else {
             // 分组：只保留 name / parent_id + status="ON"（分组通常"在线"）
             ch.setStatus("ON");
@@ -317,5 +332,14 @@ public class CatalogResponseMessageHandler implements MessageHandler {
 
     private static String emptyToNull(String s) {
         return (s == null || s.isBlank()) ? null : s;
+    }
+
+    /**
+     * 读一个扩展元素：优先 {@code <Info>} 内，其次 Item 层（厂商写法不一）。
+     * 显式允许 {@code info == null}：不带 Info 的报文也要能读出外层扩展。
+     */
+    private static String infoText(Element item, Element info, String tag) {
+        String value = info == null ? null : emptyToNull(XmlUtils.childText(info, tag));
+        return value != null ? value : emptyToNull(XmlUtils.childText(item, tag));
     }
 }

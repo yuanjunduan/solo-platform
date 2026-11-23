@@ -156,7 +156,7 @@ public final class PlatformCatalogXml {
             sb.append("<Status>").append(online ? "ON" : "OFF").append("</Status>\r\n");
             appendTag(sb, "Longitude", it.getLongitude() == null ? 0 : it.getLongitude());
             appendTag(sb, "Latitude", it.getLatitude() == null ? 0 : it.getLatitude());
-            appendPtzInfo(sb, it);
+            appendInfo(sb, it, deviceGbId);
         }
         // 变更通知专用：GB/T 28181 的 Event 是 Item 的最后一个元素；全量快照（Response / 主动推送）
         // 不带本字段——上级若在快照里读不到已删除节点也不会回删，删除必须单独发 DEL
@@ -240,15 +240,41 @@ public final class PlatformCatalogXml {
     }
 
     /**
-     * 通道的视频类型：GB/T 28181 的 {@code PTZType} 属于 {@code <Info>} 子元素，写在 Item 层
-     * 上级会忽略；取不到时按 1（球机/摄像机）兜底——写 0 会让部分上级把监控点当成非视频通道，
-     * 点播入口直接消失。分组节点不是视频设备，不写本段。
+     * 通道的 {@code <Info>} 段：视频类型 + 全局身份。
+     *
+     * <p><b>PTZType</b> 属于 {@code <Info>} 子元素，写在 Item 层上级会忽略；取不到时按 1
+     * （球机/摄像机）兜底——写 0 会让部分上级把监控点当成非视频通道，点播入口直接消失。</p>
+     *
+     * <p><b>全局身份</b>（3.9.3）：{@code OriginPlatformId} + {@code OriginCode} <b>恒带</b>。
+     * 本地资源填本平台国标码 + 自身码；入站/转发资源填透传上来的最上游身份。上游没提供时
+     * 只能填"直接来源"，属于协议允许的降级（跨级去重退化为按直接来源判定）。
+     * {@code OriginChain} / {@code HopCount} 有值才带——空标签会被上级当成非法节点。</p>
      */
-    private static void appendPtzInfo(StringBuilder sb, GbDeviceChannel it) {
+    private static void appendInfo(StringBuilder sb, GbDeviceChannel it, String deviceGbId) {
         Integer ptz = it.getPtzType();
         sb.append("<Info>\r\n");
         sb.append("<PTZType>").append(ptz == null || ptz == 0 ? 1 : ptz).append("</PTZType>\r\n");
+        String originPlatform = firstText(it.getOriginPlatformCode(), deviceGbId);
+        if (originPlatform != null) {
+            sb.append("<OriginPlatformId>").append(escapeXml(originPlatform)).append("</OriginPlatformId>\r\n");
+        }
+        String originCode = firstText(it.getOriginCode(), it.getChannelId());
+        if (originCode != null) {
+            sb.append("<OriginCode>").append(escapeXml(originCode)).append("</OriginCode>\r\n");
+        }
+        appendTag(sb, "OriginChain", it.getOriginChain());
+        if (it.getHopCount() != null && it.getHopCount() > 0) {
+            appendTag(sb, "HopCount", it.getHopCount());
+        }
         sb.append("</Info>\r\n");
+    }
+
+    /** 取第一个非空白值 */
+    private static String firstText(String first, String second) {
+        if (first != null && !first.isBlank()) {
+            return first.trim();
+        }
+        return second == null || second.isBlank() ? null : second.trim();
     }
 
     private static String nullSafe(String s) {

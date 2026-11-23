@@ -4,7 +4,9 @@ import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.solo.system.response.UserAuthResponse;
 import com.solo.system.response.UserStatusCountVO;
 import com.solo.system.entity.SysUser;
+import org.apache.ibatis.annotations.Delete;
 import org.apache.ibatis.annotations.Mapper;
+import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import java.util.List;
 
@@ -36,4 +38,16 @@ public interface SysUserMapper extends BaseMapper<SysUser> {
 
     @Select("SELECT status, COUNT(*) AS count FROM sys_user WHERE deleted = 0 GROUP BY status")
     List<UserStatusCountVO> selectStatusCount();
+
+    /**
+     * 物理清除同用户名的「逻辑删除墓碑」。
+     *
+     * <p>与 {@link SysRoleMapper#purgeDeletedByRoleCode} 同因：uk_username 不含 deleted，
+     * {@code @TableLogic} 让 createUser 的查重看不到墓碑、插入却撞唯一键，兜底成 500「系统异常」。
+     * 插入前先清墓碑，用户名即可复用。</p>
+     *
+     * @return 被清理的墓碑行数（0 表示没有墓碑，属正常路径）
+     */
+    @Delete("DELETE FROM sys_user WHERE username = #{username} AND deleted = 1")
+    int purgeDeletedByUsername(@Param("username") String username);
 }

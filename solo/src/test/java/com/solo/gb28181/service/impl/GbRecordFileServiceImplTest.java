@@ -327,16 +327,18 @@ class GbRecordFileServiceImplTest {
     }
 
     @Test
-    void deleteStillRemovesRowWhenObjectDeleteFails() {
+    void deleteKeepsRowWhenObjectDeleteFails() {
         GbRecordFile r = storedRow(1, GbRecordFile.STATUS_SUCCESS, 0);
         r.setObjectName("gb28181/record/a.mp4");
         when(recordFileMapper.selectById(1L)).thenReturn(r);
         doThrow(new RuntimeException("S3 500")).when(fileStorage).delete(anyString());
 
-        recordFileService.delete(1L);
-
-        // 对象没删掉靠存储侧生命周期兜底，这行元数据不能一直删不掉
-        verify(recordFileMapper).deleteById(1L);
+        // 对象没删掉就先别删元数据：否则记录没了、对象成了永远清不掉的孤儿。
+        // 失败要让用户看得见、能重试（批量清理走 deleteStorageQuietly 才吞异常）
+        assertThatThrownBy(() -> recordFileService.delete(1L))
+                .isInstanceOf(ServiceException.class)
+                .hasMessageContaining("请重试");
+        verify(recordFileMapper, never()).deleteById(1L);
     }
 
     // ---------- presignedUrl ----------

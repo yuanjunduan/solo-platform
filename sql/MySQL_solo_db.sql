@@ -463,6 +463,31 @@ CREATE TABLE gb_local_config
 INSERT IGNORE INTO gb_local_config (id, sip_id, sip_domain, sip_ip, sip_public_ip, sip_port, password)
 VALUES (1, '34020000002000000002', '3402000000', NULL, NULL, 5062, 'solo@1024');
 
+DROP TABLE IF EXISTS gb_org;
+CREATE TABLE gb_org
+(
+    id          bigint      NOT NULL COMMENT '主键ID',
+    parent_id   bigint      NOT NULL DEFAULT 0 COMMENT '父组织主键，0=根',
+    name        varchar(64) NOT NULL COMMENT '组织名称',
+    code        varchar(20)          DEFAULT NULL COMMENT '组织国标编码（导入生成上级分组时写 215/216，可为空）',
+    path        varchar(512) NOT NULL DEFAULT '' COMMENT '物化路径 /根id/.../自身id/，子树查询用 LIKE 前缀',
+    level       int         NOT NULL DEFAULT 1 COMMENT '层级，根=1',
+    sort        int         NOT NULL DEFAULT 0 COMMENT '同级排序',
+    remark      varchar(255)         DEFAULT NULL COMMENT '备注',
+    create_time datetime    NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    update_time datetime    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_org_parent_name (parent_id, name),
+    UNIQUE KEY uk_org_code (code),
+    KEY        idx_org_path (path),
+    KEY        idx_org_parent (parent_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='本地组织树（仅本地域资源归属；与面向上级的推送分组 gb_platform_group 无关）';
+
+-- 预置根组织：本地设备/通道默认归属，id 固定 1（雪花 ID 不会与之冲突）
+INSERT INTO gb_org (id, parent_id, name, path, level, sort)
+VALUES (1, 0, '默认组织', '/1/', 1, 0);
+
 DROP TABLE IF EXISTS gb_device;
 CREATE TABLE gb_device
 (
@@ -486,6 +511,8 @@ CREATE TABLE gb_device
     charset                varchar(20)          DEFAULT 'GB2312' COMMENT '字符集',
     status                 tinyint              DEFAULT 0 COMMENT '在线状态 0离线 1在线 2未注册',
     source                 tinyint     NOT NULL DEFAULT 3 COMMENT '数据来源 1新增 2导入 3注册',
+    domain                 varchar(16) NOT NULL DEFAULT 'LOCAL' COMMENT '所属域 LOCAL本地 / SUBORDINATE下级平台 / REMOTE第三方资源平台',
+    org_id                 bigint               DEFAULT NULL COMMENT '所属本地组织 gb_org.id；仅 LOCAL 域有值',
     register_time          datetime             DEFAULT NULL COMMENT '最后注册时间',
     keepalive_time         datetime             DEFAULT NULL COMMENT '最后心跳时间',
     last_catalog_sync_time datetime             DEFAULT NULL COMMENT '最后Catalog同步时间',
@@ -493,9 +520,10 @@ CREATE TABLE gb_device
     create_time            datetime    NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     update_time            datetime    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
     PRIMARY KEY (id),
-    UNIQUE KEY uk_device_id (device_id),
+    UNIQUE KEY uk_domain_device (domain, device_id),
     KEY                    idx_status (status),
-    KEY                    idx_source (source)
+    KEY                    idx_source (source),
+    KEY                    idx_domain_org (domain, org_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 DROP TABLE IF EXISTS gb_device_channel;
@@ -504,6 +532,7 @@ CREATE TABLE gb_device_channel
     id           bigint      NOT NULL COMMENT '主键ID',
     device_id    varchar(50) NOT NULL COMMENT '所属设备国标ID（目录上报源）',
     platform_id  varchar(50) NOT NULL DEFAULT '' COMMENT '来源接入平台国标ID（发起 Catalog 的注册方，多下级平台据此区分通道归属）',
+    org_id       bigint               DEFAULT NULL COMMENT '组织归属覆盖值 gb_org.id；NULL=继承所属设备的 org_id',
     channel_id   varchar(50) NOT NULL COMMENT '通道/分组国标码',
     report_name  varchar(255)         DEFAULT NULL COMMENT '上报原始名称',
     name         varchar(255)         DEFAULT NULL COMMENT '自定义显示名称',
@@ -536,6 +565,7 @@ CREATE TABLE gb_device_channel
     PRIMARY KEY (id),
     UNIQUE KEY uk_device_channel (device_id, channel_id),
     KEY          idx_platform (platform_id, parental),
+    KEY          idx_org (org_id),
     KEY          idx_channel_id (channel_id),
     KEY          idx_parent_id (parent_id),
     KEY          idx_device_tree_path (device_id, parental, tree_path),
@@ -599,6 +629,29 @@ CREATE TABLE gb_platform
     update_time datetime    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
     PRIMARY KEY (id),
     UNIQUE KEY uk_platform_id (platform_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+DROP TABLE IF EXISTS gb_platform_registry;
+CREATE TABLE gb_platform_registry
+(
+    id                     bigint      NOT NULL COMMENT '主键ID',
+    platform_gb_id         varchar(50) NOT NULL COMMENT '平台/接入端点国标码，等于 gb_device_channel.device_id（发起 Catalog 的端点）',
+    direction              varchar(16) NOT NULL DEFAULT 'DOWNSTREAM' COMMENT '级联方向 DOWNSTREAM下级 / UPSTREAM上级 / REMOTE第三方资源平台',
+    kind                   varchar(16) NOT NULL DEFAULT 'PLATFORM' COMMENT '端点类型 PLATFORM平台（11-13位=200）/ DEVICE接入设备或网关',
+    name                   varchar(255)         DEFAULT NULL COMMENT '展示名称',
+    sip_ip                 varchar(64)          DEFAULT NULL COMMENT '信令IP',
+    sip_port               int                  DEFAULT NULL COMMENT '信令端口',
+    online_status          tinyint              DEFAULT 0 COMMENT '在线状态 0离线 1在线 2未注册',
+    last_catalog_sync_time datetime             DEFAULT NULL COMMENT '最后Catalog同步时间',
+    channel_count          int         NOT NULL DEFAULT 0 COMMENT '通道数（parental=0）',
+    group_count            int         NOT NULL DEFAULT 0 COMMENT '分组数（parental=1）',
+    enabled                tinyint     NOT NULL DEFAULT 1 COMMENT '1启用 0停用（停用后左树不展示）',
+    remark                 varchar(255)         DEFAULT NULL COMMENT '备注',
+    create_time            datetime    NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    update_time            datetime    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_direction_gb_id (direction, platform_gb_id),
+    KEY                    idx_registry_direction (direction, enabled)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 DROP TABLE IF EXISTS media_server;

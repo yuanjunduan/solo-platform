@@ -18,7 +18,15 @@ public interface GbDeviceService extends IService<GbDevice> {
 
     Page<GbDevice> pageQuery(GbDevicePageRequest request);
 
-    List<GbDeviceStatusCountVO> statusCount();
+    /**
+     * 按状态统计设备数。
+     *
+     * @param domain         资源域；空/ALL=全部
+     * @param orgId          组织 id；null=不按组织过滤，-1=只看未归属，正数=只看该组织（含下级由 includeSubtree 决定）
+     * @param includeSubtree 带 orgId 时是否含子孙组织
+     * @param platformId     左树选中的端点国标码；null=不过滤
+     */
+    List<GbDeviceStatusCountVO> statusCount(String domain, Long orgId, boolean includeSubtree, String platformId);
 
     void createByManual(GbDevice device, java.util.List<GbDeviceChannel> channels);
 

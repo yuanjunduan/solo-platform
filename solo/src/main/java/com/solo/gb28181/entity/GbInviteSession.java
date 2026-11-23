@@ -89,6 +89,26 @@ public class GbInviteSession {
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
     private LocalDateTime stopTime;
 
+    /**
+     * 最后一次确认还在收 RTP 的时刻，<b>僵尸判定唯一依据</b>。
+     * <p>为什么不直接在 ZLM 上查：ZLM 的 {@code getMediaList} 没有"最后收流时刻"字段——
+     * {@code createStamp} 是流创建时刻，{@code aliveSecond} 取的也是流的创建时刻（不是最后收流时刻）。
+     * 所以只能由巡检（每 10s）采样 {@code bytesSpeed} 后回写：有码流就刷新，没码流就保持旧值，
+     * 超过 {@code gb28181.cascade.rtp-timeout-sec} 即判定源流已死。</p>
+     */
+    @Schema(description = "最后一次确认收到 RTP 的时刻（巡检采样回写）")
+    @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
+    private LocalDateTime lastRtpTime;
+
+    /**
+     * 最后一次确认"有人观看"的时刻（ZLM totalReaderCount &gt; 0 或正在被上级/广播消费）。
+     * <p>空闲回收的唯一依据：没有观看者超过阈值就断开，避免长期占用上游带宽（3.11.3）。
+     * 从未有观看者时以 {@code readyTime} 起算，否则"点播后一直没人打开播放器"永远回收不掉。</p>
+     */
+    @Schema(description = "最后一次确认有观看者的时刻（空闲回收依据）")
+    @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
+    private LocalDateTime lastReaderTime;
+
     @Schema(description = "失败原因")
     private String failReason;
 }

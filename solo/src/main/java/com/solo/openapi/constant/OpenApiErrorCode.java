@@ -34,6 +34,10 @@ public enum OpenApiErrorCode {
     // 限流 429
     RATE_LIMITED(429, 42901, "请求过于频繁，触发限流"),
     DAILY_QUOTA_EXCEEDED(429, 42902, "当日调用量已超限"),
+    STREAM_LIMIT_EXCEEDED(429, 42903, "并发订阅连接数已达上限，请稍后重试"),
+
+    // 冲突 409：事件游标已超出保留窗口（6.4 验收标准 ④）
+    CURSOR_EXPIRED(409, 40901, "游标已超出保留窗口，请改拉全量快照"),
 
     // 平台类 500
     INTERNAL_ERROR(500, 50001, "平台内部错误"),

@@ -100,6 +100,11 @@ public class Gb28181Properties {
     private Record record = new Record();
 
     /**
+     * 点播取流侧调优（3.11.3）。
+     */
+    private Play play = new Play();
+
+    /**
      * <p>本平台作为下级向上级平台推送数据（Catalog 响应、Notify 变更）时的分片/节奏控制。</p>
      */
     @Data
@@ -142,6 +147,33 @@ public class Gb28181Properties {
          * 上级点播回 200 OK 后等待上级 ACK 的超时（毫秒）。超时未收到 ACK 即释放会话并向上级发 BYE。
          */
         private long sendAckTimeoutMs = 60_000;
+
+        /**
+         * 回给上级 200 OK 的媒体地址（SDP c= / o= 行）。留空则依次回退到
+         * {@code MediaServer.streamIp} 与 {@code MediaServer.hostIp}。
+         * <p>NAT / 多网卡 / 上级不在同一网段时，节点 IP 往往不是上级可达的地址，必须在这里显式指定对外 IP。
+         * 配了但不合法（{@code 0.0.0.0} / 回环）时直接拒绝点播并回 500，不再静默回退——配置错误必须立刻暴露，
+         * 否则上级表现为"点播黑屏，而本侧取流、推流全部正常"，是最难查的一类故障（架构约束 C21a）。</p>
+         */
+        private String sdpPublicIp;
+
+        /**
+         * 源流存活阈值（秒）：源流超过该时长一直没有任何 RTP（或者已经从 ZLM 上消失），
+         * 判定为僵尸流 → 逐个上级会话<b>先停推再发 BYE</b>，最后回收来源侧会话。
+         * <p>专网 30s、公网 60s 是常见值；设 0 或负数关闭巡检。</p>
+         * <p>架构文档里还写了"按上级平台覆盖（{@code platform.rtp_timeout_sec}）"，
+         * 但 {@code gb_parent_platform} 目前没有该列，因此首版只有全局阈值。</p>
+         */
+        private long rtpTimeoutSec = 30;
+
+        /**
+         * 每跳点播失败后的冷却时长（秒）。同一跳（入站取流腿按 streamId、出站推流腿按上级+通道）
+         * 在一次点播失败后进入冷却，冷却期内的重复请求直接快速失败，不再触碰设备/下级平台。
+         * <p>为什么需要：上游或设备卡死时，前端与上级都会按秒级节奏重试，每次重试都要等满
+         * {@code media.invite-timeout-seconds} 才失败，线程池很快被拖满。3s 足够覆盖一次
+         * 设备级抖动，又不会让"刚修好"的通道长时间不可用。设为 0 或负数关闭冷却。</p>
+         */
+        private int hopCooldownSec = 3;
     }
 
     /**
@@ -248,5 +280,20 @@ public class Gb28181Properties {
          * 上传中（ZLM 回调后进程崩溃等）卡在 UPLOADING 多久算僵死，由重试任务重新拉取，单位分钟。
          */
         private int uploadingStuckMinutes = 30;
+    }
+
+    /**
+     * 点播取流侧调优（3.11.3）：空闲回收阈值。
+     */
+    @Data
+    public static class Play {
+
+        /**
+         * 空闲回收阈值（秒）：一路取流会话连续该时长没有任何观看者（ZLM 播放器/级联推流/语音广播消费），
+         * 巡检时主动 BYE + 关流，避免长期占用上游设备带宽与本地端口。
+         * <p>从未有观看者的会话以 readyTime（或 startTime）为基线起算，避免"刚拉起就被回收"。
+         * 设 0 或负数关闭巡检。</p>
+         */
+        private int idleReclaimSec = 120;
     }
 }

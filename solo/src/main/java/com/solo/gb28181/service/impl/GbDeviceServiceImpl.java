@@ -5,6 +5,8 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.solo.common.ServiceException;
 import com.solo.gb28181.config.Gb28181Properties;
+import com.solo.gb28181.constant.GbCascadeDirection;
+import com.solo.gb28181.constant.GbDomain;
 import com.solo.gb28181.constant.GbRedisKeys;
 import com.solo.gb28181.constant.GbSource;
 import com.solo.gb28181.entity.GbDevice;
@@ -19,6 +21,8 @@ import com.solo.gb28181.response.GbDeviceStatusCountVO;
 import com.solo.gb28181.service.GbDeviceService;
 import com.solo.gb28181.service.GbInviteSessionCleanupService;
 import com.solo.gb28181.service.GbInviteSessionService;
+import com.solo.gb28181.service.GbOrgService;
+import com.solo.gb28181.service.GbPlatformRegistryService;
 import com.solo.gb28181.subscribe.DeviceCatalogSubscribeManager;
 import com.solo.gb28181.transmit.cmd.SipCommander;
 import lombok.RequiredArgsConstructor;
@@ -32,6 +36,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import javax.sip.ResponseEvent;
 import java.time.LocalDateTime;
+import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
@@ -51,6 +56,8 @@ public class GbDeviceServiceImpl extends ServiceImpl<GbDeviceMapper, GbDevice> i
     private final GbInviteSessionCleanupService inviteCleanup;
     private final GbDeviceChannelMapper channelMapper;
     private final ApplicationEventPublisher eventPublisher;
+    private final GbOrgService orgService;
+    private final GbPlatformRegistryService platformRegistryService;
 
 
     @Lazy
@@ -76,13 +83,90 @@ public class GbDeviceServiceImpl extends ServiceImpl<GbDeviceMapper, GbDevice> i
         if (request.getSource() != null) {
             wrapper.eq(GbDevice::getSource, request.getSource());
         }
+        // 左树选中平台节点：端点编码精确匹配（平台节点就是 gb_device 里的一行镜像设备）
+        String platformId = trimToNull(request.getPlatformId());
+        if (platformId != null) {
+            wrapper.eq(GbDevice::getDeviceId, platformId);
+        }
+        applyDomainAndOrg(wrapper, request.getDomain(), request.getOrgId(), request.isIncludeSubtree());
         wrapper.orderByDesc(GbDevice::getUpdateTime);
         return page(new Page<>(request.getPage(), request.getPageSize()), wrapper);
     }
 
+    /**
+     * 域 + 组织过滤（设备页）。
+     *
+     * <p>组织只属于本地域，所以一旦带了 orgId 就同时锁定 {@code domain = LOCAL}：
+     * 否则"未归属"条件会把下级平台的镜像设备（org_id 恒为 NULL）也搜出来。
+     * 显式指定了下级/远程域又带 orgId 时必为空集（两个条件不可能同时成立）。</p>
+     */
+    private void applyDomainAndOrg(LambdaQueryWrapper<GbDevice> wrapper,
+                                   String domainParam, Long orgId, boolean includeSubtree) {
+        String domain = normalizeDomain(domainParam);
+        if (domain != null && orgId == null) {
+            wrapper.eq(GbDevice::getDomain, domain);
+        }
+        if (orgId == null) {
+            return;
+        }
+        if (domain != null && !GbDomain.LOCAL.equals(domain)) {
+            wrapper.apply("1 = 0");
+            return;
+        }
+        wrapper.eq(GbDevice::getDomain, GbDomain.LOCAL);
+        if (orgId < 0) {
+            wrapper.isNull(GbDevice::getOrgId);
+            return;
+        }
+        List<Long> orgIds = orgService.subtreeOrgIds(orgId, includeSubtree);
+        if (orgIds.isEmpty()) {
+            wrapper.apply("1 = 0");
+        } else {
+            wrapper.in(GbDevice::getOrgId, orgIds);
+        }
+    }
+
+    /**
+     * 域参数归一：ALL（左树"全部"页签）与空值都表示不过滤，返回 null。
+     * 三个真实域沿用原有校验，拼错仍然报错而不是被当成"全部"静默放行。
+     */
+    private static String normalizeDomain(String domainParam) {
+        String domain = trimToNull(domainParam);
+        if (domain == null || "ALL".equalsIgnoreCase(domain)) {
+            return null;
+        }
+        if (!GbDomain.isValid(domain)) {
+            throw new ServiceException("未知的资源域：" + domain);
+        }
+        return domain;
+    }
+
+    private static String trimToNull(String s) {
+        if (s == null) {
+            return null;
+        }
+        String t = s.trim();
+        return t.isEmpty() ? null : t;
+    }
+
     @Override
-    public List<GbDeviceStatusCountVO> statusCount() {
-        return getBaseMapper().selectStatusCount();
+    public List<GbDeviceStatusCountVO> statusCount(String domain, Long orgId, boolean includeSubtree,
+                                                   String platformId) {
+        String d = normalizeDomain(domain);
+        String pid = trimToNull(platformId);
+        if (orgId == null) {
+            return getBaseMapper().selectStatusCount(d, null, false, pid);
+        }
+        // 组织只属于本地域：显式指定了下级/远程又按组织统计，两个条件不可能同时成立
+        if (d != null && !GbDomain.LOCAL.equals(d)) {
+            return Collections.emptyList();
+        }
+        // -1 = 未归属；正数走子树展开，与列表同一套组织规则（mapper 在 orgIds 非空时自行锁 LOCAL）
+        if (orgId < 0) {
+            return getBaseMapper().selectStatusCount(null, null, true, pid);
+        }
+        return getBaseMapper().selectStatusCount(null,
+                orgService.subtreeOrgIds(orgId, includeSubtree), false, pid);
     }
 
     @Override
@@ -99,6 +183,15 @@ public class GbDeviceServiceImpl extends ServiceImpl<GbDeviceMapper, GbDevice> i
         device.setId(null);
         device.setStatus(GbSource.DEVICE_STATUS_UNREGISTERED);
         device.setSource(GbSource.SYSTEM);
+        // 资源域由录入方指定：不传按本地域；REMOTE 用于第三方资源平台的共享目录（仅目录，暂不可点播）
+        String domain = device.getDomain() == null ? null : device.getDomain().trim();
+        if (domain == null || domain.isEmpty()) {
+            device.setDomain(GbDomain.LOCAL);
+        } else if (!GbDomain.isValid(domain)) {
+            throw new ServiceException("未知的资源域：" + domain);
+        } else {
+            device.setDomain(domain);
+        }
         // SIP 运行期字段清空，别让手工录入带进脏数据
         device.setRegisterTime(null);
         device.setKeepaliveTime(null);
@@ -158,8 +251,15 @@ public class GbDeviceServiceImpl extends ServiceImpl<GbDeviceMapper, GbDevice> i
             device.setRegisterTime(now);
             device.setKeepaliveTime(now);
             device.setSource(GbSource.REGISTER);
+            // 首次注册才判域：平台类端点（国标码 11-13 位 = 200）落 SUBORDINATE，
+            // 接入设备落 LOCAL。已有行不改域，避免把人工调整过的归属覆盖掉。
+            if (device.getDomain() == null || device.getDomain().isBlank()) {
+                device.setDomain(GbCascadeDirection.isPlatformGbId(device.getDeviceId())
+                        ? GbDomain.SUBORDINATE : GbDomain.LOCAL);
+            }
             save(device);
-            log.info("[设备上线] 新设备首次注册: {} {}", device.getDeviceId(), device.getHostAddress());
+            log.info("[设备上线] 新设备首次注册: {} {} domain={}",
+                    device.getDeviceId(), device.getHostAddress(), device.getDomain());
         } else {
             // 只更新注册/心跳相关字段，不覆盖已有的厂商型号名称等配置
             lambdaUpdate()
@@ -179,6 +279,8 @@ public class GbDeviceServiceImpl extends ServiceImpl<GbDeviceMapper, GbDevice> i
         }
         refreshOnlineKey(device.getDeviceId());
         evictProfileCache(device.getDeviceId());
+        // 登记簿跟注册走：左树根层的名称/在线态/信令地址由此刷新
+        platformRegistryService.upsertOnRegister(device);
     }
 
     @Override
@@ -190,6 +292,8 @@ public class GbDeviceServiceImpl extends ServiceImpl<GbDeviceMapper, GbDevice> i
         }
         redisTemplate.delete(GbRedisKeys.DEVICE_ONLINE_PREFIX + deviceId);
         evictProfileCache(deviceId);
+        // 左树根层的在线徽标跟着掉线
+        platformRegistryService.markOffline(deviceId);
 
         // 设备离线，清扫该设备所有活跃会话，把 RTP 端口和 SSRC 收回来
         cleanupSessions(deviceId);

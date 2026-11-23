@@ -39,4 +39,7 @@ public class PlayResultResponse {
 
     @Schema(description = "WebRTC 播放地址（节点未配置 rtcPort 时为空字符串）")
     private String rtcUrl;
+
+    @Schema(description = "实际取流的 res_channel.id（同源选路可能切到组内另一条，停止时以 streamId 为准）")
+    private String sourceChannelRowId;
 }

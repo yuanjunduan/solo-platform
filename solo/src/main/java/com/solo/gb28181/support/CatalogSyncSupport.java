@@ -11,6 +11,7 @@ import com.solo.gb28181.mapper.GbDeviceChannelMapper;
 import com.solo.gb28181.mapper.GbDeviceMapper;
 import com.solo.gb28181.service.GbDeviceChannelService;
 import com.solo.gb28181.service.GbDeviceService;
+import com.solo.gb28181.service.GbPlatformRegistryService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
@@ -60,6 +61,7 @@ public class CatalogSyncSupport {
     private final GbDeviceChannelMapper channelMapper;
     private final GbDeviceChannelService channelService;
     private final GbDeviceMapper deviceMapper;
+    private final GbPlatformRegistryService platformRegistryService;
     private final ThreadPoolTaskExecutor executor;
 
     /**
@@ -71,12 +73,14 @@ public class CatalogSyncSupport {
                               GbDeviceChannelMapper channelMapper,
                               GbDeviceChannelService channelService,
                               GbDeviceMapper deviceMapper,
+                              GbPlatformRegistryService platformRegistryService,
                               @Qualifier("catalogSyncExecutor") ThreadPoolTaskExecutor executor) {
         this.properties = properties;
         this.deviceService = deviceService;
         this.channelMapper = channelMapper;
         this.channelService = channelService;
         this.deviceMapper = deviceMapper;
+        this.platformRegistryService = platformRegistryService;
         this.executor = executor;
     }
 
@@ -202,6 +206,8 @@ public class CatalogSyncSupport {
                             .set(GbDevice::getLastCatalogSyncTime, LocalDateTime.now()));
             // 失效档案缓存：lastCatalogSyncTime 变了，下条 MESSAGE 应拿到最新值
             deviceService.evictProfileCache(device.getDeviceId());
+            // 登记簿的通道/分组计数与同步时间按端点重算一次（逐条累加会漂）
+            platformRegistryService.refreshCatalogStats(device.getDeviceId());
         }
     }
 }

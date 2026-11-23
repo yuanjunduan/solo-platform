@@ -385,6 +385,8 @@ public class GbRecordFileServiceImpl implements GbRecordFileService {
         vo.setDeviceName(deviceNameMap.get(r.getDeviceId()));
         vo.setChannelId(r.getChannelId());
         vo.setChannelName(channelNameMap.get(r.getDeviceId() + "|" + r.getChannelId()));
+        vo.setStreamId(r.getStreamId());
+        vo.setFailReason(r.getFailReason());
         vo.setStartTime(r.getStartTime());
         vo.setEndTime(r.getEndTime());
         vo.setDuration(r.getDuration());

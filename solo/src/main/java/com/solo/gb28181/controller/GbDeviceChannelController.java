@@ -11,6 +11,7 @@ import com.solo.gb28181.entity.GbDeviceChannel;
 import com.solo.gb28181.request.GbChannelSubtreePageRequest;
 import com.solo.gb28181.request.GbDeviceChannelBatchDeleteRequest;
 import com.solo.gb28181.request.GbDeviceChannelPageRequest;
+import com.solo.gb28181.response.GbCatalogSourceVO;
 import com.solo.gb28181.response.GbChannelStatusCountVO;
 import com.solo.gb28181.response.GbChannelTreeNodeVO;
 import com.solo.gb28181.response.GbChannelTreeLevelVO;
@@ -50,13 +51,31 @@ public class GbDeviceChannelController {
     }
 
 
+    @Operation(summary = "目录来源列表（推过目录的端点：下级平台 / 接入设备）")
+    @GetMapping("/sources")
+    @RequirePermission({"gb28181:device-channel:list"})
+    public Result<List<GbCatalogSourceVO>> sources() {
+        return Result.success(channelService.catalogSources());
+    }
+
     @Operation(summary = "按状态统计通道数")
     @GetMapping("/status-count")
     @RequirePermission({"gb28181:device-channel:list"})
     public Result<List<GbChannelStatusCountVO>> statusCount(
-            @Parameter(description = "下级平台国标编码；不传=全部平台")
-            @RequestParam(required = false) String platformId) {
-        return Result.success(channelService.statusCount(platformId));
+            @Parameter(description = "来源端点国标编码；不传=全部来源")
+            @RequestParam(required = false) String deviceId,
+            @Parameter(description = "历史参数（等价于 deviceId，仅兼容旧调用）")
+            @RequestParam(required = false) String platformId,
+            @Parameter(description = "组织 id；-1=未归属；不传=不按组织过滤")
+            @RequestParam(required = false) Long orgId,
+            @Parameter(description = "资源域：LOCAL / SUBORDINATE / REMOTE / ALL；不传=全部")
+            @RequestParam(required = false) String domain,
+            @Parameter(description = "按组织统计时是否含子孙组织，默认 true")
+            @RequestParam(defaultValue = "true") boolean includeSubtree,
+            @Parameter(description = "左树选中分组时的 tree_path 前缀；不传=不按分组过滤")
+            @RequestParam(required = false) String pathPrefix) {
+        return Result.success(channelService.statusCount(deviceId, platformId, orgId, domain,
+                includeSubtree, pathPrefix));
     }
 
     @Operation(summary = "按设备国标ID列出全部通道")

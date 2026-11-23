@@ -11,6 +11,7 @@ import com.solo.system.request.ConfigPageRequest;
 import com.solo.system.request.ConfigRequest;
 import com.solo.system.service.SysConfigService;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 
@@ -34,12 +35,16 @@ public class SysConfigServiceImpl extends ServiceImpl<SysConfigMapper, SysConfig
     }
 
     @Override
+    @Transactional
     public void createConfig(ConfigRequest request) {
         SysConfig existing = getOne(new LambdaQueryWrapper<SysConfig>()
                 .eq(SysConfig::getConfigKey, request.getConfigKey()));
         if (existing != null) {
             throw new ServiceException("参数键已存在");
         }
+        // 已逻辑删除的同键记录仍占着 uk_config_key（唯一键不含 deleted），先清墓碑再插入，
+        // 否则复用参数键会撞唯一键、被兜底成 500「系统异常，请联系管理员」。
+        baseMapper.purgeDeletedByConfigKey(request.getConfigKey());
         SysConfig config = new SysConfig();
         config.setConfigName(request.getConfigName());
         config.setConfigKey(request.getConfigKey());

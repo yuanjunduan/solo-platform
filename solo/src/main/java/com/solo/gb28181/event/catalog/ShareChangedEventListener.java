@@ -1,11 +1,11 @@
 package com.solo.gb28181.event.catalog;
 
+import com.solo.domain.share.service.ShareCatalogService;
 import com.solo.gb28181.config.Gb28181Properties;
 import com.solo.gb28181.entity.GbDeviceChannel;
 import com.solo.gb28181.entity.GbParentPlatform;
 import com.solo.gb28181.processor.request.SubscribeHolder;
 import com.solo.gb28181.processor.request.SubscribeInfo;
-import com.solo.gb28181.service.CatalogShareService;
 import com.solo.gb28181.service.GbParentPlatformService;
 import com.solo.gb28181.transmit.cmd.PlatformCommander;
 import lombok.RequiredArgsConstructor;
@@ -18,6 +18,10 @@ import java.util.List;
 
 /**
  * <p>share 增删后，对活跃的级联订阅（deviceId 空 = 订阅整个平台目录）按最新共享通道推送。</p>
+ *
+ * <p>数据源与 {@code Query/Catalog} 应答、NOTIFY 投递共用 M4 的出站三表
+ * （{@link ShareCatalogService#loadCatalogItems}）；读遗留 {@code gb_platform_share} 会让
+ * "应答目录里有、推送里没有"的节点永远对不齐。</p>
  */
 @Slf4j
 @Component
@@ -26,7 +30,7 @@ public class ShareChangedEventListener {
 
     private final SubscribeHolder subscribeHolder;
     private final GbParentPlatformService gbParentPlatformService;
-    private final CatalogShareService catalogShareService;
+    private final ShareCatalogService shareCatalogService;
     private final PlatformCommander platformCommander;
     private final Gb28181Properties properties;
 
@@ -49,7 +53,7 @@ public class ShareChangedEventListener {
         if (sub.getDeviceId() != null && !sub.getDeviceId().isEmpty()) {
             return;
         }
-        List<GbDeviceChannel> items = catalogShareService.loadSharedCatalogItems(parentPlatformId);
+        List<GbDeviceChannel> items = shareCatalogService.loadCatalogItems(parentPlatformId);
         if (items == null) {
             items = List.of();
         }

@@ -1,5 +1,18 @@
 <template>
   <div class="flex h-full gap-3 overflow-hidden p-3">
+    <!-- 左侧：目录树（本地组织 / 下级平台 + 镜像分组，选中后右侧列表跟随过滤） -->
+    <div
+      class="flex w-[248px] shrink-0 flex-col overflow-hidden rounded-xl border border-border bg-card"
+    >
+      <GbCatalogTreePanel
+        :domain="treeDomain"
+        :selected-key="treeSelectedKey"
+        title="通道目录"
+        all-label="全部通道"
+        @select="onCatalogTreeSelect"
+      />
+    </div>
+
     <!-- 左侧：列表卡片 -->
     <div class="flex min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-border bg-card">
       <!-- 工具栏 -->
@@ -57,6 +70,18 @@
         <div class="flex-1" />
         <RefreshButton :loading="resource.loading" :on-refresh="onRefresh" />
         <Button
+          v-access="PERM.GB_ORG_ASSIGN"
+          variant="ghost"
+          size="icon"
+          class="size-8"
+          title="批量调整归属"
+          :disabled="!checkedIds.size || assigning"
+          @click="assignOpen = true"
+        >
+          <Loader2 v-if="assigning" class="size-4 animate-spin" />
+          <IconSitemap v-else class="size-4" />
+        </Button>
+        <Button
           v-access="PERM.GB_DEVICE_CHANNEL_DELETE"
           variant="ghost"
           size="icon"
@@ -98,7 +123,30 @@
           class="h-7 w-44 rounded-md bg-transparent px-2 text-[13px] outline-none placeholder:text-muted-foreground focus:bg-muted/70"
           placeholder="请输入通道名称"
         />
-        <GbPlatformSelect v-model="platformIdQ" />
+        <!-- 域分段：本地 / 下级 / 远程 / 全部（互斥）；目录树视图按来源浏览，不参与域筛选 -->
+        <div
+          class="ml-1 flex h-7 items-center rounded-md bg-muted/50 p-0.5 transition-opacity"
+          :class="activeKey === 'tree' ? 'opacity-50' : ''"
+        >
+          <button
+            v-for="opt in DOMAIN_OPTIONS"
+            :key="opt.label"
+            type="button"
+            class="h-6 rounded px-2 text-xs transition-colors"
+            :class="
+              domainTouched && domainFilter === opt.value
+                ? 'bg-card text-foreground shadow-sm'
+                : 'text-muted-foreground hover:text-foreground'
+            "
+            :title="activeKey === 'tree' ? '目录树视图按来源浏览，不参与域筛选' : opt.hint"
+            :aria-disabled="activeKey === 'tree'"
+            @click="onDomain(opt.value)"
+          >
+            {{ opt.label }}
+          </button>
+        </div>
+        <GbCatalogSourceSelect ref="sourceRef" v-model="sourceIdQ" />
+        <!-- 组织筛选由左侧目录树承担（选中组织即按组织+子组织过滤） -->
 
         <span v-if="hasCondition" class="text-xs text-muted-foreground">
           匹配 {{ resource.total.value }} 条
@@ -120,13 +168,15 @@
 
       <!-- 列表 -->
       <div v-show="activeKey !== 'tree'" ref="scrollerRef" class="min-h-0 flex-1 overflow-auto">
-        <!-- 未选下级平台：不查询，先引导选择 -->
+        <!-- 来源 / 组织 / 域三者都没表态：不查询，先引导选择 -->
         <div
-          v-if="!platformIdQ"
+          v-if="!sourceIdQ && !orgFilter && !domainTouched"
           class="flex flex-col items-center gap-3 py-16 text-[13px] text-muted-foreground"
         >
-          <div>请先选择下级平台，再查看其上报的通道目录</div>
-          <GbPlatformSelect v-model="platformIdQ" />
+          <div>
+            请选择目录来源（下级平台 / 接入设备），或从左侧目录树选择组织 / 平台 / 分组，或用资源域分段跨来源查看通道
+          </div>
+          <GbCatalogSourceSelect v-model="sourceIdQ" />
         </div>
         <table v-else class="w-full table-fixed border-collapse text-left text-[13px]">
           <thead class="sticky top-0 z-10">
@@ -138,8 +188,9 @@
                 />
               </th>
               <th class="w-48 px-3 py-2 font-normal">通道名称</th>
-              <th class="w-52 px-3 py-2 font-normal">通道编码</th>
-              <th class="w-52 px-3 py-2 font-normal">设备编码</th>
+              <th class="w-48 px-3 py-2 font-normal">通道编码</th>
+              <th class="w-48 px-3 py-2 font-normal">设备编码</th>
+              <th class="w-32 px-3 py-2 font-normal">所属组织</th>
               <th class="w-[72px] px-3 py-2">
                 <span class="inline-flex items-center gap-1 font-normal">
                   状态
@@ -260,6 +311,9 @@
               <td class="truncate px-3 py-2 font-mono text-muted-foreground" :title="c.deviceId || ''">
                 {{ c.deviceId || '—' }}
               </td>
+              <td class="truncate px-3 py-2 text-xs" :title="orgLabel(c)">
+                <span :class="orgTextClass(c)">{{ orgLabel(c) }}</span>
+              </td>
               <td class="px-3 py-2">
                 <span
                   class="text-xs"
@@ -297,7 +351,7 @@
         </div>
 
         <div
-          v-else-if="platformIdQ && !resource.loading.value && resource.items.value.length === 0"
+          v-else-if="sourceIdQ && !resource.loading.value && resource.items.value.length === 0"
           class="flex flex-col items-center gap-2 py-16 text-muted-foreground"
         >
           <IconVideoOff class="size-8" />
@@ -324,11 +378,11 @@
       <!-- 目录树：左侧组织树懒加载（每层一次请求），右侧选中组织的通道分页 -->
       <div v-show="activeKey === 'tree'" class="min-h-0 flex-1 overflow-hidden">
         <div
-          v-if="!platformIdQ"
+          v-if="!sourceIdQ"
           class="flex flex-col items-center gap-3 py-16 text-[13px] text-muted-foreground"
         >
-          <div>目录树按下级平台展示，请先选择下级平台</div>
-          <GbPlatformSelect v-model="platformIdQ" />
+          <div>目录树按来源展示，请选择目录来源（下级平台 / 接入设备）</div>
+          <GbCatalogSourceSelect v-model="sourceIdQ" />
         </div>
         <div v-else class="flex h-full min-h-0">
           <!-- 左：组织树 -->
@@ -523,16 +577,37 @@
         </div>
       </aside>
     </Transition>
+
+    <!-- 归属弹窗：任选目标组织，或清空归属（回落跟随设备） -->
+    <GbOrgPicker
+      v-model:open="assignOpen"
+      kind="channel"
+      :tree="orgTree"
+      :count="checkedIds.size"
+      :default-org-id="orgFilter"
+      :submitting="assigning"
+      @submit="onAssign"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { IconSearch, IconX, IconFilter, IconLoader2, IconVideoOff } from '@tabler/icons-vue'
+import { useRoute, useRouter } from 'vue-router'
+import {
+  IconSearch,
+  IconX,
+  IconFilter,
+  IconLoader2,
+  IconVideoOff,
+  IconSitemap,
+} from '@tabler/icons-vue'
 import { Plus, Trash2, Loader2, Folder } from 'lucide-vue-next'
 import GbChannelInspector from '@/features/gb/GbChannelInspector.vue'
 import GbDeviceChannelTree from '@/features/gb/GbDeviceChannelTree.vue'
-import GbPlatformSelect from '@/features/gb/GbPlatformSelect.vue'
+import GbCatalogTreePanel from '@/features/gb/GbCatalogTreePanel.vue'
+import GbCatalogSourceSelect from '@/features/gb/GbCatalogSourceSelect.vue'
+import GbOrgPicker from '@/features/gb/GbOrgPicker.vue'
 import RefreshButton from '@/components/RefreshButton.vue'
 import {
   getGbDeviceChannelPageApi,
@@ -540,7 +615,9 @@ import {
   getGbChannelSubtreePageApi,
   batchDeleteGbDeviceChannelApi,
   getGbChannelStatusCountApi,
-  getGbPlatformPageApi,
+  getGbCatalogSourceListApi,
+  getGbOrgTreeApi,
+  assignGbOrgApi,
 } from '@/api/gb28181'
 import { useResource } from '@/shared/composables/useResource'
 import { PERM } from '@/features/access/permissions'
@@ -552,21 +629,153 @@ import Switch from '@/components/ui/switch/Switch.vue'
 import { Select, SelectContent, SelectItem } from '@/components/ui/select'
 import { SelectTrigger as RawSelectTrigger } from 'reka-ui'
 import type {
+  GbCatalogDomain,
+  GbCatalogNavNode,
+  GbCatalogSource,
   GbDeviceChannel,
   GbDeviceChannelPageRequest,
   GbDeviceChannelTreeNode,
   GbChannelTreeLevel,
+  GbDomain,
+  GbOrgTreeNode,
 } from '@/types/api'
+import { GB_ORG_UNASSIGNED } from '@/types/api'
 
 /* ---------------- 搜索 / 状态 tab ---------------- */
 type TabKey = 'all' | 'group' | 'tree' | 'channel' | 'online' | 'offline' | 'unregistered'
 
+const route = useRoute()
+const router = useRouter()
+
 const channelIdQ = ref('')
 const nameQ = ref('')
-/** 当前下级平台（gb_platform.platform_id）：页面第一维度，未选不查询 */
-const platformIdQ = ref<string | undefined>(undefined)
-/** 首次挂载期间由 onMounted 统一加载，避开自动选平台触发的重复请求 */
+/** 当前目录来源（推过目录的端点 = gb_device_channel.device_id）：默认第一维度，未选不查询 */
+const sourceIdQ = ref<string | undefined>(undefined)
+/** 首次挂载期间由 onMounted 统一加载，避开自动选来源触发的重复请求 */
 let booted = false
+
+/* ---------------- 资源域分段（本地 / 下级 / 远程 / 全部） ---------------- */
+const DOMAIN_OPTIONS: Array<{ label: string; value: GbDomain | undefined; hint: string }> = [
+  { label: '本地', value: 'LOCAL', hint: '本地组织下维护的设备通道' },
+  { label: '下级', value: 'SUBORDINATE', hint: '下级平台目录同步来的通道镜像' },
+  { label: '远程', value: 'REMOTE', hint: '第三方资源平台共享的通道（仅目录，暂不可播放）' },
+  { label: '全部', value: undefined, hint: '不限资源域' },
+]
+const domainFilter = ref<GbDomain | undefined>(undefined)
+/** 是否主动点过分段：「全部」本身不带 domain 值，靠它区分"要看全部资源"与"什么都没选" */
+const domainTouched = ref(false)
+/** 来源选择器引用：用它的 sources 判断"当前来源属于哪个域"，避免域与来源互相矛盾产生必然空集 */
+const sourceRef = ref<{ sources?: GbCatalogSource[] } | null>(null)
+/** onDomain 主动清空组织筛选时，跳过组织 watch 的重复请求 */
+let suppressOrgSearch = false
+/** onDomain 主动清空来源时，跳过来源 watch 的重复请求 */
+let suppressSourceSearch = false
+
+const pickedSource = computed(
+  () => sourceRef.value?.sources?.find((s) => s.deviceId === sourceIdQ.value) ?? null,
+)
+
+/**
+ * 切域：非本地域没有本地归属，清掉组织筛选；域与当前来源不一致时清掉来源，改为跨来源浏览。
+ * 「全部」= 不限域但明确跨来源查询，因此用 domainTouched 与"未选任何条件"区分开。
+ */
+const onDomain = (v: GbDomain | undefined) => {
+  // 目录树按来源浏览，域只影响列表视图（按钮已是 aria-disabled，这里再兜一层）
+  if (activeKey.value === 'tree') return
+  if (domainTouched.value && domainFilter.value === v) return
+  domainTouched.value = true
+  domainFilter.value = v
+  // 换域后旧树节点/分组前缀失效，避免右侧仍按它们过滤
+  catalogNode.value = null
+  pathPrefixFilter.value = undefined
+  if (v !== undefined && v !== 'LOCAL' && orgFilter.value !== undefined) {
+    suppressOrgSearch = true
+    orgFilter.value = undefined
+  }
+  // 「全部」= 跨来源看所有域，来源必须让位；具体域与来源不一致时同理，避免出现必然空集
+  if (pickedSource.value && (v === undefined || pickedSource.value.domain !== v)) {
+    suppressSourceSearch = true
+    sourceIdQ.value = undefined
+  }
+  cursor.value = 0
+  clearChecked()
+  selected.value = null
+  resource.search()
+  fetchStatusCount()
+}
+
+/* ---------------- 组织筛选（可脱离来源，跨来源按组织看） ---------------- */
+const orgFilter = ref<string | undefined>(undefined)
+const orgIncludeSubtree = ref(true)
+
+/* ---------------- 左侧目录树（与来源/组织筛选双向同步） ---------------- */
+/** 当前选中的树节点 */
+const catalogNode = ref<GbCatalogNavNode | null>(null)
+/** 选中镜像分组时按物化路径前缀过滤，命中该分组及其所有子分组 */
+const pathPrefixFilter = ref<string | undefined>(undefined)
+
+const treeDomain = computed<GbCatalogDomain>(() => domainFilter.value ?? 'ALL')
+/** 手选来源时也把树定位到对应平台节点（来源 → 树）；点树节点时反写来源（树 → 来源） */
+const treeSelectedKey = computed(
+  () => catalogNode.value?.key ?? (sourceIdQ.value ? `plat:${sourceIdQ.value}` : ''),
+)
+/**
+ * 列表/计数实际生效的域：选中平台/分组节点时以节点真实域为准，
+ * 避免顶部分段与端点真实域不一致把数据过滤成空集。
+ */
+const effectiveDomain = computed<GbDomain | undefined>(() =>
+  catalogNode.value && catalogNode.value.nodeType !== 'ORG'
+    ? catalogNode.value.domain
+    : domainFilter.value,
+)
+
+const onCatalogTreeSelect = (node: GbCatalogNavNode | null) => {
+  catalogNode.value = node
+  pathPrefixFilter.value = undefined
+  domainTouched.value = true
+  if (!node) {
+    // "全部通道"入口：清掉来源/组织/分组限定，按当前域跨来源看
+    if (sourceIdQ.value) {
+      suppressSourceSearch = true
+      sourceIdQ.value = undefined
+    }
+    if (orgFilter.value !== undefined) {
+      suppressOrgSearch = true
+      orgFilter.value = undefined
+    }
+  } else if (node.nodeType === 'ORG') {
+    // 本地组织：按组织 + 子组织跨来源看通道
+    if (sourceIdQ.value) {
+      suppressSourceSearch = true
+      sourceIdQ.value = undefined
+    }
+    domainFilter.value = 'LOCAL'
+    orgIncludeSubtree.value = true
+    const nextOrg = node.orgId ?? undefined
+    if (orgFilter.value !== nextOrg) suppressOrgSearch = true
+    orgFilter.value = nextOrg
+  } else {
+    // 平台端点：锁定来源；镜像分组再叠加路径前缀
+    if (orgFilter.value !== undefined) {
+      suppressOrgSearch = true
+      orgFilter.value = undefined
+    }
+    const nextSource = node.platformGbId ?? undefined
+    if (sourceIdQ.value !== nextSource) suppressSourceSearch = true
+    sourceIdQ.value = nextSource
+    if (node.nodeType === 'GROUP') {
+      pathPrefixFilter.value =
+        node.treePath ||
+        (node.platformGbId && node.groupCode ? `/${node.platformGbId}/${node.groupCode}` : undefined)
+    }
+  }
+  cursor.value = 0
+  clearChecked()
+  selected.value = null
+  resource.search()
+  fetchStatusCount()
+}
+
 const activeKey = ref<TabKey>('all')
 const sourceFilter = ref<'__all__' | '1' | '2' | '3'>('__all__')
 const ptzFilter = ref<'__all__' | '0' | '1' | '2' | '3' | '4'>('__all__')
@@ -623,20 +832,32 @@ const hasCondition = computed(
     !!nameQ.value.trim() ||
     activeKey.value !== 'all' ||
     sourceFilter.value !== '__all__' ||
-    ptzFilter.value !== '__all__',
+    ptzFilter.value !== '__all__' ||
+    domainTouched.value ||
+    orgFilter.value !== undefined ||
+    pathPrefixFilter.value !== undefined,
 )
 
 const resource = useResource<GbDeviceChannelPageRequest, GbDeviceChannel>({
   fetcher: (q) => {
-    // 未选下级平台不查询：避免把多个平台上报的目录混在一起
-    if (!platformIdQ.value) return Promise.resolve({ data: { rows: [], total: 0 } })
+    // 来源 / 组织 / 资源域都没表态时不查询：避免把多个来源上报的目录混在一起；
+    // 「全部」段由 domainTouched 标记为"明确跨来源看全部域"，此时照常查询
+    if (!sourceIdQ.value && !orgFilter.value && !domainTouched.value) {
+      return Promise.resolve({ data: { rows: [], total: 0 } })
+    }
     return getGbDeviceChannelPageApi({
       ...q,
       channelId: channelIdQ.value.trim() || undefined,
       name: nameQ.value.trim() || undefined,
-      platformId: platformIdQ.value,
+      // 来源端点即 device_id（精确匹配），不再用恒等冗余的 platform_id；按组织/域跨来源看时不带
+      deviceId: sourceIdQ.value,
       source: sourceFilter.value === '__all__' ? undefined : Number(sourceFilter.value),
       ptzType: ptzFilter.value === '__all__' ? undefined : Number(ptzFilter.value),
+      domain: effectiveDomain.value,
+      orgId: orgFilter.value,
+      includeSubtree: orgIncludeSubtree.value,
+      // 左树选中镜像分组时按 tree_path 前缀含子树过滤
+      pathPrefix: pathPrefixFilter.value,
       ...tabQuery(activeKey.value),
     })
   },
@@ -644,10 +865,19 @@ const resource = useResource<GbDeviceChannelPageRequest, GbDeviceChannel>({
 })
 
 const fetchStatusCount = async () => {
-  // 计数跟随所选平台，与列表口径一致；未选平台时全部归零
-  const rows = platformIdQ.value
-    ? (await getGbChannelStatusCountApi(platformIdQ.value)).data
-    : []
+  // 计数跟随列表口径：来源 + 资源域 + 组织（含下级）；三者都没表态时不查询，全部归零
+  const rows =
+    sourceIdQ.value || orgFilter.value || domainTouched.value
+      ? (
+          await getGbChannelStatusCountApi({
+            deviceId: sourceIdQ.value,
+            domain: effectiveDomain.value,
+            orgId: orgFilter.value,
+            includeSubtree: orgIncludeSubtree.value,
+            pathPrefix: pathPrefixFilter.value,
+          })
+        ).data
+      : []
   const sumWhere = (parental: number, status?: string) =>
     rows
       .filter((r) => r.parental === parental && (status === undefined || r.status === status))
@@ -708,9 +938,9 @@ const findTreeNode = (
   return null
 }
 
-/** 拉平台根一层：顺带把右侧列表重置到「设备（全部组织）」 */
+/** 拉来源根一层：顺带把右侧列表重置到「设备（全部组织）」 */
 const loadRootTree = async () => {
-  if (!platformIdQ.value) {
+  if (!sourceIdQ.value) {
     treeRootLevel.value = null
     treeRootNodes.value = []
     treeExpanded.value = new Set()
@@ -722,7 +952,7 @@ const loadRootTree = async () => {
   }
   treeLoading.value = true
   try {
-    treeRootLevel.value = (await getGbDeviceChannelTreeChildrenApi(platformIdQ.value)).data ?? null
+    treeRootLevel.value = (await getGbDeviceChannelTreeChildrenApi(sourceIdQ.value)).data ?? null
     treeRootNodes.value = treeRootLevel.value?.children ?? []
     treeExpanded.value = new Set()
     treeNodeLoading.value = new Set()
@@ -748,7 +978,7 @@ const onToggleTree = async (code: string) => {
 
   treeNodeLoading.value = new Set(treeNodeLoading.value).add(code)
   try {
-    const level = (await getGbDeviceChannelTreeChildrenApi(platformIdQ.value!, code)).data
+    const level = (await getGbDeviceChannelTreeChildrenApi(sourceIdQ.value!, code)).data
     node.children = level?.children ?? []
     node.hasChildren = !!level?.children?.length
     node.subtreeChannelCount = level?.subtreeChannelCount ?? node.subtreeChannelCount
@@ -777,7 +1007,7 @@ const selectOrg = async (code: string, node?: GbDeviceChannelTreeNode) => {
 }
 
 const loadTreeChannels = async () => {
-  if (!platformIdQ.value) {
+  if (!sourceIdQ.value) {
     treeChannels.value = []
     treeChannelTotal.value = 0
     return
@@ -787,8 +1017,8 @@ const loadTreeChannels = async () => {
     const res = await getGbChannelSubtreePageApi({
       page: treeChannelPage.value,
       pageSize: TREE_PAGE_SIZE,
-      // 目录上报时 device_id 即平台编码（一个平台一个目录会话），树接口仍按 deviceId 查
-      deviceId: platformIdQ.value,
+      // 目录上报时 device_id 即来源端点编码（一个来源一个目录会话），树接口按 deviceId 查
+      deviceId: sourceIdQ.value,
       orgCode: treeSelectedCode.value || undefined,
       includeSubtree: includeSubtree.value,
       keyword: treeKeyword.value.trim() || undefined,
@@ -841,11 +1071,30 @@ const triggerSearch = () => {
   }, 300)
 }
 watch([channelIdQ, nameQ], triggerSearch)
-watch(platformIdQ, async () => {
+watch(sourceIdQ, async () => {
   cursor.value = 0
   clearChecked()
   selected.value = null
-  // 首次由 onMounted 统一加载，避免自动选平台触发重复请求
+  // onDomain 清来源时由它自己刷新，跳过这里的重复请求
+  if (suppressSourceSearch) {
+    suppressSourceSearch = false
+    return
+  }
+  // 手选/清空来源时，树上的分组前缀不再适用；来源与树节点不一致则取消高亮
+  pathPrefixFilter.value = undefined
+  if (catalogNode.value && catalogNode.value.platformGbId !== sourceIdQ.value) {
+    catalogNode.value = null
+  }
+  // 来源自带域：选中来源后把域分段对齐，避免"域与来源互斥"造成必然空集
+  const picked = pickedSource.value
+  if (picked) {
+    if (domainFilter.value !== picked.domain) domainFilter.value = picked.domain
+    domainTouched.value = true
+  } else if (domainFilter.value !== undefined) {
+    // 手工清掉来源但域还在：继续按域跨来源查询
+    domainTouched.value = true
+  }
+  // 首次由 onMounted 统一加载，避免自动选来源触发重复请求
   if (!booted) return
   if (activeKey.value === 'tree') {
     await Promise.all([loadRootTree(), fetchStatusCount()])
@@ -862,6 +1111,25 @@ watch(ptzFilter, () => {
   cursor.value = 0
   clearChecked()
   resource.search()
+})
+watch([orgFilter, orgIncludeSubtree], () => {
+  // onDomain 主动清空组织筛选时，列表已由 onDomain 自行刷新
+  if (suppressOrgSearch) {
+    suppressOrgSearch = false
+    return
+  }
+  // 组织只属于本地域：按组织看时把域收敛到本地，与后端锁定口径一致
+  if (orgFilter.value) {
+    domainFilter.value = 'LOCAL'
+    domainTouched.value = true
+  }
+  // 首屏由 onMounted 统一加载（下钻带入的 orgId 不重复触发）
+  if (!booted) return
+  cursor.value = 0
+  clearChecked()
+  selected.value = null
+  resource.search()
+  fetchStatusCount()
 })
 
 const onTab = (key: TabKey) => {
@@ -880,13 +1148,22 @@ const onTab = (key: TabKey) => {
 const onClear = () => {
   channelIdQ.value = ''
   nameQ.value = ''
-  // 下级平台是页面第一维度，清除只针对搜索/筛选条件
+  // 目录来源是页面第一维度，清除只针对搜索/筛选条件
   activeKey.value = 'all'
   sourceFilter.value = '__all__'
   ptzFilter.value = '__all__'
+  // 组织与域一起清空：抑制组织 watch 的自动刷新，统一在末尾刷新一次
+  if (orgFilter.value !== undefined) suppressOrgSearch = true
+  domainFilter.value = undefined
+  domainTouched.value = false
+  orgFilter.value = undefined
+  orgIncludeSubtree.value = true
+  catalogNode.value = null
+  pathPrefixFilter.value = undefined
   cursor.value = 0
   clearChecked()
   resource.search()
+  fetchStatusCount()
 }
 
 /* ---------------- 选择（勾选） ---------------- */
@@ -997,6 +1274,36 @@ const onBatchDelete = async () => {
   }
 }
 
+/* ---------------- 批量调整组织归属 ---------------- */
+const assigning = ref(false)
+const assignOpen = ref(false)
+
+/** 目标组织由弹窗任选：'-1' = 清空覆盖值（回落跟随设备） */
+const onAssign = async (orgId: string) => {
+  if (!checkedIds.value.size) return
+  const count = checkedIds.value.size
+  assigning.value = true
+  try {
+    const res = await assignGbOrgApi({
+      orgId,
+      channelIds: [...checkedIds.value],
+    })
+    toast.success(
+      orgId === GB_ORG_UNASSIGNED
+        ? `已清空 ${res.data?.channels ?? count} 条通道的组织覆盖值`
+        : `已调整 ${res.data?.channels ?? count} 条通道的归属`,
+    )
+    assignOpen.value = false
+    clearChecked()
+    selected.value = null
+    await Promise.all([resource.search(), fetchStatusCount(), fetchOrgTree()])
+  } catch {
+    // 非本地域等拒绝原因由请求拦截器提示
+  } finally {
+    assigning.value = false
+  }
+}
+
 /* ---------------- 展示辅助 ---------------- */
 const displayName = (c: GbDeviceChannel) => c.name || c.reportName || c.channelId
 
@@ -1027,6 +1334,38 @@ const ptzText = (c: GbDeviceChannel) => {
   if (c.parental === 1 || c.ptzType == null) return '—'
   return PTZ_TEXT[c.ptzType] ?? '未知'
 }
+
+/* ---------------- 本地组织（仅用于有效组织 id→名称展示） ---------------- */
+const orgTree = ref<GbOrgTreeNode[]>([])
+const orgNameMap = computed(() => {
+  const map = new Map<string, string>()
+  const walk = (nodes: GbOrgTreeNode[]) => {
+    for (const node of nodes) {
+      map.set(node.id, node.name)
+      if (node.children?.length) walk(node.children)
+    }
+  }
+  walk(orgTree.value)
+  return map
+})
+
+const fetchOrgTree = async () => {
+  try {
+    orgTree.value = (await getGbOrgTreeApi()).data ?? []
+  } catch {
+    // 无组织权限时降级：组织列不影响通道浏览
+    orgTree.value = []
+  }
+}
+
+/** 有效组织 = 通道自身 orgId 优先，否则继承设备；接口已算好，这里只做 id→名称 */
+const orgLabel = (c: GbDeviceChannel) => {
+  if (!c.effectiveOrgId) return '—'
+  return orgNameMap.value.get(c.effectiveOrgId) ?? '—'
+}
+
+const orgTextClass = (c: GbDeviceChannel) =>
+  c.effectiveOrgId ? 'text-muted-foreground' : 'text-muted-foreground/50'
 
 /* ---------------- 键盘流 ---------------- */
 const isTypingTarget = (el: EventTarget | null) =>
@@ -1094,13 +1433,16 @@ const onGlobalKeydown = (e: KeyboardEvent) => {
 /* ---------------- 生命周期 / observer ---------------- */
 let observer: IntersectionObserver | null = null
 
-/** 进入页面自动选中第一个已登记下级平台；平台多时用户可手工切换 */
-const ensurePlatformSelected = async () => {
-  if (platformIdQ.value) return
+/** 进入页面自动选中一个目录来源：优先在线且有通道的来源；来源多时用户可手工切换 */
+const ensureSourceSelected = async () => {
+  if (sourceIdQ.value) return
   try {
-    const rows = (await getGbPlatformPageApi({ page: 1, pageSize: 200 })).data.rows ?? []
-    const pick = rows.find((p) => p.status === 1) ?? rows.find((p) => p.enabled === 1) ?? rows[0]
-    if (pick) platformIdQ.value = pick.platformId
+    const rows = (await getGbCatalogSourceListApi()).data ?? []
+    const pick =
+      rows.find((s) => s.onlineStatus === 1 && s.channelCount > 0) ??
+      rows.find((s) => s.channelCount > 0) ??
+      rows[0]
+    if (pick) sourceIdQ.value = pick.deviceId
   } catch {
     // 拉不到列表就保持未选，页面空态里有选择入口
   }
@@ -1108,8 +1450,20 @@ const ensurePlatformSelected = async () => {
 
 onMounted(async () => {
   window.addEventListener('keydown', onGlobalKeydown)
-  await ensurePlatformSelected()
+  // 组织页下钻：?orgId=xxx 时不自动选来源，直接按组织跨来源看
+  const drillOrgId = typeof route.query.orgId === 'string' ? route.query.orgId : undefined
+  if (drillOrgId) {
+    orgFilter.value = drillOrgId
+    // 组织只属于本地域：下钻时把分段收敛到"本地"，与后端锁定口径一致
+    domainFilter.value = 'LOCAL'
+    domainTouched.value = true
+    // subtree=0：只看该组织直接归属（与组织页"直接通道"计数口径一致）
+    orgIncludeSubtree.value = route.query.subtree !== '0'
+  }
+  void fetchOrgTree()
+  if (!drillOrgId) await ensureSourceSelected()
   await Promise.all([resource.load(true), fetchStatusCount()])
+  if (drillOrgId) await router.replace({ path: route.path, query: {} })
   booted = true
   observer = new IntersectionObserver(
     (entries) => {

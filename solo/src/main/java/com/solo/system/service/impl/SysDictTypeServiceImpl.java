@@ -44,12 +44,16 @@ public class SysDictTypeServiceImpl extends ServiceImpl<SysDictTypeMapper, SysDi
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public void createDictType(DictTypeRequest request) {
         SysDictType existing = getOne(new LambdaQueryWrapper<SysDictType>()
                 .eq(SysDictType::getDictType, request.getDictType()));
         if (existing != null) {
             throw new ServiceException("字典类型编码已存在");
         }
+        // 已逻辑删除的同编码记录仍占着 uk_dict_type（唯一键不含 deleted），先清墓碑再插入，
+        // 否则复用编码会撞唯一键、被兜底成 500「系统异常，请联系管理员」。
+        baseMapper.purgeDeletedByDictType(request.getDictType());
         SysDictType type = new SysDictType();
         type.setDictName(request.getDictName());
         type.setDictType(request.getDictType());
@@ -65,7 +69,11 @@ public class SysDictTypeServiceImpl extends ServiceImpl<SysDictTypeMapper, SysDi
         }
         String oldDictType = type.getDictType();
         if (request.getDictName() != null) type.setDictName(request.getDictName());
-        if (request.getDictType() != null) type.setDictType(request.getDictType());
+        if (request.getDictType() != null) {
+            // 改成已被墓碑占用的编码同样会撞 uk_dict_type，先清墓碑
+            baseMapper.purgeDeletedByDictType(request.getDictType());
+            type.setDictType(request.getDictType());
+        }
         if (request.getStatus() != null) type.setStatus(request.getStatus());
         updateById(type);
         // 类型编码变更时，同步刷新关联字典数据

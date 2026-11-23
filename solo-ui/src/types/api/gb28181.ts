@@ -1,6 +1,86 @@
 /** 国标 GB28181 模块类型（当前覆盖：设备管理、设备通道 CRUD） */
 import type { PageRequest } from './common'
 
+/**
+ * 资源域：资源从哪来。
+ * - LOCAL 本地：本地组织下维护，带 orgId，可推送到上级
+ * - SUBORDINATE 下级：SIP 级联从下级平台目录同步来的镜像，不带 orgId
+ * - REMOTE 第三方资源平台：HTTP 拉取的共享资源（后续实装）
+ */
+export type GbDomain = 'LOCAL' | 'SUBORDINATE' | 'REMOTE'
+
+/** 域分段控件取值：undefined 表示全部 */
+export type GbDomainFilter = GbDomain | undefined
+
+/** 组织过滤里的"未归属"哨兵（与后端约定 -1） */
+export const GB_ORG_UNASSIGNED = '-1'
+
+/** 目录同步进度快照（内嵌在来源卡片里） */
+export interface GbCatalogSync {
+  /** IDLE 从未同步 / RUNNING 进行中 / SUCCESS 收齐 / FAILED 超时或异常 */
+  status: 'IDLE' | 'RUNNING' | 'SUCCESS' | 'FAILED'
+  received: number
+  total: number
+  percent: number
+  /** yyyy-MM-dd HH:mm:ss */
+  startedAt?: string | null
+  lastUpdateAt?: string | null
+  finishedAt?: string | null
+  errorMsg?: string | null
+  duplicateCount: number
+}
+
+/** 本地组织（资源归属树节点；与推送分组 gb_platform_group 无关） */
+export interface GbOrg {
+  /** 雪花 id，字符串传递避免精度丢失 */
+  id: string
+  /** 父组织 id；0 表示挂在根之外（不推荐，正常都挂在根下） */
+  parentId: string
+  name: string
+  /** 20 位国标编码，可空 */
+  code?: string | null
+  /** 物化路径 /根id/.../自身id/ */
+  path: string
+  level: number
+  sort: number
+  remark?: string | null
+  createTime?: string
+  updateTime?: string
+}
+
+/** 组织树节点（带直接设备/通道数） */
+export interface GbOrgTreeNode extends GbOrg {
+  directDeviceCount?: number
+  directChannelCount?: number
+  children?: GbOrgTreeNode[]
+}
+
+/** 组织新增/编辑请求 */
+export interface GbOrgSaveRequest {
+  parentId?: string | null
+  name: string
+  code?: string | null
+  sort?: number
+  remark?: string | null
+}
+
+/** 批量调整资源组织归属请求 */
+export interface GbOrgAssignRequest {
+  /** 目标组织 id；'-1' 或空 = 清空（设备变未归属，通道回落跟随设备） */
+  orgId?: string | null
+  deviceIds?: string[]
+  channelIds?: string[]
+}
+
+/** 调整组织归属结果 */
+export interface GbOrgAssignResult {
+  /** 目标组织名称；清空时为 null */
+  orgName?: string | null
+  devices: number
+  channels: number
+}
+
+
 /** 设备通道目录同步状态 */
 export interface GbSyncStatus {
   deviceId: string
@@ -39,6 +119,14 @@ export interface GbDevicePageRequest extends PageRequest {
   status?: number
   /** 数据来源：1 系统新增，2 表格导入，3 设备注册 */
   source?: number
+  /** 资源域；不传=全部 */
+  domain?: GbDomain
+  /** 所属本地组织 id（传 -1 = 未归属）；一旦传了就只查 LOCAL 域 */
+  orgId?: string
+  /** 按组织过滤时是否含子孙组织，默认 true */
+  includeSubtree?: boolean
+  /** 端点精确过滤（左树选中平台节点时用）；传了就只查该端点自身 */
+  platformId?: string
 }
 
 /** 国标设备 */
@@ -74,6 +162,10 @@ export interface GbDevice {
   subscribeCycleForCatalog?: number
   /** 数据来源：1 系统新增，2 表格导入，3 设备注册 */
   source?: number
+  /** 资源域（通道随设备走，不由通道自身存储） */
+  domain?: GbDomain
+  /** 所属本地组织 id；仅 LOCAL 域有值 */
+  orgId?: string | null
   createTime: string
   updateTime: string
 }
@@ -106,9 +198,9 @@ export interface GbDeviceDetectResult {
 
 /** 通道列表分页查询参数 */
 export interface GbDeviceChannelPageRequest extends PageRequest {
-  /** 所属设备国标编码 */
+  /** 所属设备/来源端点国标编码（精确匹配 device_id） */
   deviceId?: string
-  /** 来源下级平台国标编码（精确匹配 platform_id） */
+  /** 历史参数（等价于 deviceId，后端按 platform_id 过滤，仅兼容旧调用） */
   platformId?: string
   /** 通道国标编码 */
   channelId?: string
@@ -124,6 +216,14 @@ export interface GbDeviceChannelPageRequest extends PageRequest {
   source?: number
   /** 云台类型：0 未知 / 1 球机 / 2 半球 / 3 固定枪机 / 4 遥控枪机（仅对通道生效） */
   ptzType?: number
+  /** 资源域（继承所属设备）；不传=全部 */
+  domain?: GbDomain
+  /** 所属组织 id（自身 orgId 优先，为空继承设备）；-1=未归属；不传=不过滤 */
+  orgId?: string
+  /** 按组织过滤时是否含子孙组织，默认 true */
+  includeSubtree?: boolean
+  /** 物化路径前缀（左树选中镜像分组时用），命中该分组及其所有子分组 */
+  pathPrefix?: string
 }
 
 /** 国标资源目录项（通道 + 分组合一） */
@@ -168,6 +268,12 @@ export interface GbDeviceChannel {
   parentId?: string
   /** 数据来源：1 系统新增，2 表格导入，3 设备注册 */
   source?: number
+  /** 组织归属覆盖值；null=继承所属设备的 orgId */
+  orgId?: string | null
+  /** 有效组织 id（自身 orgId 优先，否则继承设备；null=未归属） */
+  effectiveOrgId?: string | null
+  /** 资源域（通道无独立域列，一律继承所属设备；REMOTE=第三方资源平台，仅目录） */
+  domain?: GbDomain | null
   createTime?: string
   updateTime?: string
 }
@@ -225,6 +331,38 @@ export interface GbChannelStatusCount {
   /** 通道：ON / OFF / UNREGISTERED；分组固定 ON */
   status: string
   count: number
+}
+
+/**
+ * 目录来源（GET /api/gb28181/device-channel/sources）。
+ * 来源 = 推过目录的端点编码（gb_device_channel.device_id），由目录数据自身聚合，
+ * 与 gb_platform（接入禁用名单）无关。
+ */
+export interface GbCatalogSource {
+  /** 来源端点国标编码 */
+  deviceId: string
+  /** 展示名称（自定义名 > 设备上报名；为空时前端回退编码） */
+  name?: string
+  /** PLATFORM=下级平台（编码第 11-13 位 200）/ DEVICE=设备或网关 */
+  kind: 'PLATFORM' | 'DEVICE'
+  /** 资源域；端点不在 gb_device 里时按 SUBORDINATE */
+  domain: GbDomain
+  /** 端点在线状态：1 在线 / 0 离线 / 2 未注册；无 gb_device 行时为空 */
+  onlineStatus?: number | null
+  /** 最近一次目录同步时间 */
+  lastCatalogSyncTime?: string | null
+  /** 目录条目总数（分组 + 通道） */
+  itemCount: number
+  /** 分组数 */
+  groupCount: number
+  /** 通道数 */
+  channelCount: number
+  /** 在线通道数 */
+  onlineChannelCount: number
+  /** 离线通道数 */
+  offlineChannelCount: number
+  /** 目录同步进度快照；从未同步时 status=IDLE */
+  sync?: GbCatalogSync
 }
 
 /** 设备报警（报警中心，POST /api/gb28181/alarm/page 行项） */
@@ -401,6 +539,11 @@ export interface GbPlayResult {
   wsFlvUrl?: string
   hlsUrl?: string
   rtcUrl?: string
+  /**
+   * 实际取流的 res_channel.id（仅入站点播返回）。
+   * 同源组内发生选路切换时，它会与请求行不同——提示用户"已换源"。
+   */
+  sourceChannelRowId?: string
 }
 
 /* ----------------------- 语音广播 ----------------------- */
@@ -784,6 +927,10 @@ export interface GbRecordFile {
   deviceName?: string
   channelId?: string
   channelName?: string
+  /** ZLM 流 ID（排查录制链路用） */
+  streamId?: string | null
+  /** 最近一次上传失败原因，仅失败时有值 */
+  failReason?: string | null
   startTime?: string
   endTime?: string
   /** 时长（秒），上传中的文件可能为空 */
@@ -879,4 +1026,73 @@ export interface GbRecordPlan {
   updateTime?: string
   /** 周时段，仅详情/保存时携带 */
   periods?: GbRecordPlanPeriod[]
+}
+
+/* ----------------------- 目录左树（懒加载） ----------------------- */
+
+/** 左树查询的资源域；ALL 表示根层把本地组织根与各平台并列 */
+export type GbCatalogDomain = GbDomain | 'ALL'
+
+/** 左树节点类型：ORG 本地组织 / PLATFORM 下级平台（含接入设备端点）/ GROUP 镜像分组 */
+export type GbCatalogNavNodeType = 'ORG' | 'PLATFORM' | 'GROUP'
+
+/**
+ * 左树节点（GET /api/gb28181/catalog/nav 的 children 项）。
+ * 三种来源共用同一结构，前端只用 key 递归展开，用 domain/platformGbId/orgId/treePath 拼右侧查询条件。
+ */
+export interface GbCatalogNavNode {
+  /** 节点唯一标识：org:{组织id} / plat:{端点码} / grp:{端点码}:{分组码} */
+  key: string
+  /** 父节点 key；根层为空 */
+  parentKey?: string | null
+  nodeType: GbCatalogNavNodeType
+  /** 展示名称 */
+  label: string
+  /** 节点所属资源域：ORG=LOCAL，PLATFORM/GROUP=端点真实域 */
+  domain: GbDomain
+  /** 本地组织主键（nodeType=ORG） */
+  orgId?: string | null
+  /** 目录来源端点国标码（nodeType=PLATFORM/GROUP） */
+  platformGbId?: string | null
+  /** 镜像分组国标码（nodeType=GROUP） */
+  groupCode?: string | null
+  /** 分组物化路径（nodeType=GROUP），右侧列表按它做子树前缀过滤 */
+  treePath?: string | null
+  /** 端点编码类型（仅 PLATFORM） */
+  kind?: 'PLATFORM' | 'DEVICE' | null
+  /** 端点在线状态 0离线 1在线 2未注册（仅 PLATFORM） */
+  onlineStatus?: number | null
+  /** 是否还有下一层（决定展开箭头） */
+  hasChildren: boolean
+  /** 直接归属该组织的本地设备数，不含子组织（仅 ORG） */
+  directDeviceCount?: number | null
+  /** 子树通道数（PLATFORM=端点总通道数，GROUP=该分组含子分组的通道数） */
+  subtreeChannelCount?: number | null
+  /** 直接下级分组数（仅 PLATFORM） */
+  childGroupCount?: number | null
+}
+
+/** 左树一层数据（GET /api/gb28181/catalog/nav） */
+export interface GbCatalogNavLevel {
+  /** 本次查询生效的资源域 */
+  domain: GbCatalogDomain
+  /** 本次展开的节点 key；根层为 root */
+  parentKey: string
+  /** 下级节点，已按后端排序规则排好 */
+  children: GbCatalogNavNode[]
+  /** 本层是否因 limit 被截断（前端应提示用关键字收窄） */
+  hasMore: boolean
+  /** 生效的单层上限 */
+  limit: number
+}
+
+/** 左树懒加载请求参数 */
+export interface GbCatalogNavRequest {
+  domain?: GbCatalogDomain
+  /** 不传=根层 */
+  parentKey?: string
+  /** 名称/编码关键字，只过滤当前层 */
+  keyword?: string
+  /** 单层上限，默认 200，后端最大 500 */
+  limit?: number
 }

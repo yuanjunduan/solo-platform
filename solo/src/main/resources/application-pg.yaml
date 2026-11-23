@@ -4,26 +4,27 @@
 #  组件分散部署时只改对应那一行，下面的连接配置不用动。
 # ============================================================
 project:
-  ip: 172.16.202.180
+  # 容器/多机部署时全部可用环境变量覆盖，默认值保持与本机开发一致（不设变量行为不变）
+  ip: ${SOLO_IP:172.16.202.180}
   # 数据库地址。本机部署用 localhost：pg_hba.conf 默认只放行 127.0.0.1，
   # 用本机网卡 IP 连接会被当作远程主机拒绝（no pg_hba.conf entry）。
   # 数据库独立部署时改成实际地址，并在 pg_hba.conf 放行本平台 IP。
-  db: localhost
+  db: ${SOLO_DB_HOST:localhost}
   # Redis 地址
-  redis: localhost
+  redis: ${SOLO_REDIS_HOST:localhost}
   # 对象存储（S3 兼容）地址
-  s3: 172.16.202.200
+  s3: ${SOLO_S3_HOST:172.16.202.200}
   # 流媒体 ZLMediaKit 地址
-  media: 172.16.202.200
+  media: ${SOLO_MEDIA_HOST:172.16.202.200}
 
 server:
-  port: 8080
+  port: ${SOLO_HTTP_PORT:8080}
 
 spring:
   datasource:
-    url: jdbc:postgresql://${project.db}:5432/solo_db
-    username: postgres
-    password: postgres
+    url: jdbc:postgresql://${project.db}:${SOLO_DB_PORT:5432}/${SOLO_DB_NAME:solo_db}
+    username: ${SOLO_DB_USER:postgres}
+    password: ${SOLO_DB_PASSWORD:postgres}
     driver-class-name: org.postgresql.Driver
     hikari:
       # 时间列是 timestamp(0) 不带时区，连接会话固定同一时区
@@ -32,10 +33,11 @@ spring:
   data:
     redis:
       host: ${project.redis}
-      port: 6379
+      port: ${SOLO_REDIS_PORT:6379}
+      password: ${SOLO_REDIS_PASSWORD:}
 
 jwt:
-  secret: c2VjcmV0LWZvci1qd3QtdG9rZW4tZ2VuZXJhdGlvbi1wbGFoZXUtdXNlLTEtbG9uZy1zZWNyZXQ=
+  secret: ${SOLO_JWT_SECRET:c2VjcmV0LWZvci1qd3QtdG9rZW4tZ2VuZXJhdGlvbi1wbGFoZXUtdXNlLTEtbG9uZy1zZWNyZXQ=}
   access-expiration: 1800000
   refresh-expiration: 604800000
 
@@ -50,11 +52,11 @@ jwt:
 #  /华为云两种都支持；AWS S3 也能跑 path-style
 # ============================================================
 s3:
-  endpoint-override: http://${project.s3}:9000
-  region: us-east-1
-  access-key: rustfsadmin
-  secret-key: rustfsadmin
-  bucket: solo
+  endpoint-override: http://${project.s3}:${SOLO_S3_PORT:9000}
+  region: ${SOLO_S3_REGION:us-east-1}
+  access-key: ${SOLO_S3_ACCESS_KEY:rustfsadmin}
+  secret-key: ${SOLO_S3_SECRET_KEY:rustfsadmin}
+  bucket: ${SOLO_S3_BUCKET:solo}
   public-url:
   path-style-access: true
 
@@ -67,17 +69,17 @@ gb28181:
   # SIP 监听 IP；无代码默认，必填
   ip: ${project.ip}
   # SIP 公网 IP；NAT/公网部署时必填，用于构造 Via/Contact 头，让下级/设备能正常回包
-  public-ip:
+  public-ip: ${SOLO_SIP_PUBLIC_IP:}
   # SIP 监听端口（与代码默认 5060 一致，标准国标端口）
-  port: 5060
+  port: ${SOLO_SIP_PORT:5060}
 
   # 本平台 SIP ID（20 位：行政区划 10 位 + 平台编号 10 位），无代码默认
-  id: 60000000042000000028
+  id: ${SOLO_SIP_ID:60000000042000000028}
   # 本平台 SIP 域（一般是行政区划 + 4 位 0000），无代码默认
-  domain: 6000000004
+  domain: ${SOLO_SIP_DOMAIN:6000000004}
 
   # 设备注册 Digest 鉴权密码。生产环境必须设置强密码；留空 = 开放模式，仅限隔离测试环境
-  password:
+  password: ${SOLO_SIP_PASSWORD:}
 
 
   # 级联下级侧：本平台作为下级向上级推送目录/通道时的分片节奏与超时
@@ -99,6 +101,25 @@ gb28181:
     send-rtp-port-start: 50000
     send-rtp-port-end: 60000
 
+    # 回给上级的 200 OK SDP 里 c=/o= 使用的对外地址。留空则依次取 media 节点的
+    # stream-ip、host-ip（节点有私网 IP 且上级在公网时必须在此显式配置）。
+    # 注意：配错（如 127.0.0.1）时点播直接失败，不会静默回退到节点 IP
+    sdp-public-ip:
+
+    # 源流存活阈值（秒）：源流超过该时长一直没有任何 RTP（或已从 ZLM 消失）判定为僵尸流，
+    # 巡检每 10s 一次 → 逐个上级会话先停推再发 BYE，最后回收来源侧会话。0 或负数关闭巡检
+    rtp-timeout-sec: 30
+
+    # 每跳点播失败后的冷却（秒）。入站取流腿按 streamId、出站推流腿按「上级 + 通道」各自独立，
+    # 冷却期内同一点播请求快速失败，不再重复打设备/下级平台。0 或负数关闭
+    hop-cooldown-sec: 3
+
+  # 取流侧调优（M6）：点播 / 回放会话的空闲回收。
+  # 一路取流连续该时长没有任何观看者（ZLM reader=0，且未被级联推流 / 语音广播消费）
+  # 就主动 BYE + 关流；巡检每 10s 一次。0 或负数关闭巡检
+  play:
+    idle-reclaim-sec: 120
+
 
 
 # ============================================================
@@ -108,7 +129,7 @@ gb28181:
 media:
   # ZLM hook 回调的鉴权 secret（须与 ZLM config.ini 中 [api].secret 一致）；
   # solo 收到 hook 后会校验请求中的 secret 字段。未配置时所有 hook 都会被拒，启动期日志会告警
-  hook-secret: solo
+  hook-secret: ${SOLO_ZLM_HOOK_SECRET:solo}
 
   # 自动点播：流不存在时自动向设备发 INVITE 发起点播（需 RTP 多端口模式启用）。
   # 开启后用户通过播放 URL 访问不存在流时自动补一次 INVITE；关闭则需先点"播放"按钮
@@ -133,20 +154,34 @@ media:
     # 是否启用首次播种（仅在表里缺该 serverId 时生效）
     enabled: true
     # ZLM 节点唯一标识，必须与 ZLM config.ini 中 [general].mediaServerId 完全一致
-    server-id: zlmediakit-local
+    server-id: ${SOLO_ZLM_SERVER_ID:zlmediakit-local}
     # 节点显示名（仅用于管理面展示）
-    name: 默认节点
+    name: ${SOLO_ZLM_SERVER_NAME:默认节点}
     # ZLM 管理面 IP（用于 REST API 调用）
     host-ip: ${project.media}
     # ZLM HTTP API 端口
     http-port: 8088
     # ZLM API secret，必须与 ZLM config.ini 的 [api].secret 完全一致。
     # 不要用短串：ZLM 启动时会把过短的 secret（实测 4 位）判为非法并自动改写配置文件，导致对接不上
-    secret: soloZlmDefaultSecret2026ABCDEFGH
+    secret: ${SOLO_ZLM_SECRET:soloZlmDefaultSecret2026ABCDEFGH}
     # 对外播放使用的 IP（HTTP-FLV / WS-FLV / HLS / WebRTC）。留空则同 host-ip。
     # 勿与 host-ip 混用：SDP c= 也从此取，需对端可达
-    stream-ip:
+    stream-ip: ${SOLO_ZLM_STREAM_IP:}
     # 对外 HTTP/WS-FLV/HLS 端口；0 表示与 http-port 一致
-    stream-http-port: 0
+    stream-http-port: ${SOLO_ZLM_STREAM_HTTP_PORT:0}
     # 对外 WebRTC 端口，取 ZLM [rtc].port；网页喊话推流依赖，防火墙放行 UDP
-    rtc-port: 8000
+    rtc-port: ${SOLO_ZLM_RTC_PORT:8000}
+
+# ============================================================
+#  保留期回收（M7，5.2 / 5.2.1）：只追加的表不清理就会变成第二张大表
+#  enabled=false 全关；某张表天数 <=0 只关该表（交给分区 DROP 或人工）
+# ============================================================
+retention:
+  enabled: true
+  audit-log-days: 365
+  play-record-days: 180
+  sync-days: 365
+  batch-size: 5000
+  max-batches-per-run: 200
+  startup-delay-ms: 300000
+  interval-ms: 86400000

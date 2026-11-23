@@ -1,14 +1,9 @@
-# 仅 fat jar 需要打进镜像；排除中间编译目录以减小构建上下文
-target/classes/
-target/test-classes/
-target/generated-sources/
-target/generated-test-sources/
-target/maven-status/
-target/surefire-reports/
-target/*.jar.original
-
-# IDE / VCS / 日志
+# 构建上下文只保留源码：tar 与 jar 在镜像内重新生成
+target/
 .idea/
 *.iml
 .git/
 *.log
+
+# 本地运行产物
+logs/

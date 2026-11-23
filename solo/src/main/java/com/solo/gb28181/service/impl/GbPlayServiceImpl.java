@@ -2,12 +2,16 @@ package com.solo.gb28181.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.solo.common.ServiceException;
+import com.solo.domain.platform.model.Platform;
+import com.solo.domain.resource.model.ResChannel;
+import com.solo.domain.resource.service.CanonicalChannelService;
 import com.solo.gb28181.config.Gb28181Properties;
 import com.solo.gb28181.entity.GbDevice;
 import com.solo.gb28181.entity.GbDeviceChannel;
 import com.solo.gb28181.entity.GbInviteSession;
 import com.solo.gb28181.mapper.GbDeviceChannelMapper;
 import com.solo.gb28181.mapper.GbDeviceMapper;
+import com.solo.gb28181.request.InboundPlayRequest;
 import com.solo.gb28181.request.PlayStartRequest;
 import com.solo.gb28181.request.PlayStopRequest;
 import com.solo.gb28181.response.PlayResultResponse;
@@ -15,10 +19,12 @@ import com.solo.gb28181.service.GbInviteSessionCleanupService;
 import com.solo.gb28181.service.GbInviteSessionService;
 import com.solo.gb28181.service.GbPlayService;
 import com.solo.gb28181.sip.SipLayer;
+import com.solo.gb28181.support.MediaHopGuard;
 import com.solo.gb28181.transmit.cmd.SdpBuilder;
 import com.solo.gb28181.transmit.cmd.SipCommander;
 import com.solo.gb28181.transmit.cmd.SipRequestHeaderProvider;
 import com.solo.gb28181.utils.SipUtils;
+import com.solo.infra.mapper.PlatformMapper;
 import com.solo.media.MediaUrlBuilder;
 import com.solo.media.client.ZlmRestClient;
 import com.solo.media.entity.MediaServer;
@@ -34,6 +40,7 @@ import org.springframework.stereotype.Service;
 
 import javax.sip.header.CallIdHeader;
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.*;
 
@@ -75,6 +82,9 @@ public class GbPlayServiceImpl implements GbPlayService {
     private final MediaServerSelector mediaServerSelector;
     private final GbMediaServerMapper mediaServerMapper;
     private final ViewTokenSigner viewTokenSigner;
+    private final CanonicalChannelService canonicalChannelService;
+    private final PlatformMapper platformMapper;
+    private final MediaHopGuard mediaHopGuard;
 
     /**
      * 等待 on_stream_changed 的 future，key=streamId
@@ -109,25 +119,149 @@ public class GbPlayServiceImpl implements GbPlayService {
         if (!"ON".equalsIgnoreCase(channel.getStatus())) {
             throw new ServiceException("通道离线，无法点播");
         }
+        return invite(device, req.getDeviceId(), req.getChannelId(),
+                req.getTransport(), req.getStreamNumber(), LOG_TAG);
+    }
 
+    /**
+     * 入站通道点播（3.7.4 + 3.10.3 同源选路）：对端平台是"设备"，通道行来自目录同步。
+     *
+     * <p>与 {@link #start} 的差别有两处：</p>
+     * <ol>
+     *   <li><b>前置校验</b>：入站通道在本地没有 {@code gb_device_channel} 行，改用
+     *       {@code res_channel.online_status} 判断在线，把 {@code platform.code} 当 deviceId、
+     *       {@code res_channel.code} 当 channelId 发给对端；</li>
+     *   <li><b>同源选路</b>：同一条物理通道可能经多条链路进来（{@code canonical_id} 关联）。
+     *       按"用户点选 → 在线 → 跳数少 → id 小"依次尝试，第一个通过前置校验的胜出；
+     *       跳数少是"延迟"在本库里唯一可靠的代理指标（3.10.3）。</li>
+     * </ol>
+     *
+     * <p><b>只在准备阶段换源</b>：INVITE 一旦发出就不再改走别的来源——那会在对端留下
+     * 一条没人接的僵尸流，也会让停止时不知道该停哪一路。</p>
+     */
+    @Override
+    public PlayResultResponse startInbound(InboundPlayRequest req) {
+        if (req == null || req.getChannelRowId() == null || req.getChannelRowId().isBlank()) {
+            throw new ServiceException("channelRowId 不能为空");
+        }
+        long rowId;
+        try {
+            rowId = Long.parseLong(req.getChannelRowId().trim());
+        } catch (NumberFormatException e) {
+            throw new ServiceException("通道 id 非法: " + req.getChannelRowId());
+        }
 
-        String rawToken = rawStreamNumber(req.getStreamNumber());
-        String streamNumber = normalizeStreamNumber(req.getStreamNumber());
-        log.info("[实时点播] 收到点播请求 设备:{} 通道:{} 码流:{}",
-                req.getDeviceId(), req.getChannelId(), streamLabel(streamNumber));
-        String streamId = buildStreamId(req.getDeviceId(), req.getChannelId(), streamNumber);
+        List<ResChannel> candidates = canonicalChannelService.playCandidates(rowId);
+        ResChannel requested = candidates.stream()
+                .filter(c -> c.getId().equals(rowId))
+                .findFirst().orElse(null);
+        if (requested == null) {
+            // 请求行已 REMOVED 且没有兄弟成员 → 同源组里也没有可用行
+            throw new ServiceException("通道已消失，无法点播");
+        }
+        if (!"INBOUND".equals(requested.getSourceType())) {
+            throw new ServiceException("该通道不是入站资源，请走本地点播");
+        }
+
+        PreparedInbound chosen = null;
+        ServiceException last = null;
+        for (ResChannel candidate : candidates) {
+            // 同源组允许混入本地行（本地行有自己的点播入口），这条链路只处理入站行
+            if (!"INBOUND".equals(candidate.getSourceType())) {
+                continue;
+            }
+            try {
+                chosen = prepareInbound(candidate);
+                break;
+            } catch (ServiceException e) {
+                last = e;
+                log.info("[{}] 同源候选不可用 行={} code={} 原因={}",
+                        LOG_TAG, candidate.getId(), candidate.getCode(), e.getMessage());
+            }
+        }
+        if (chosen == null) {
+            if (last != null) {
+                throw last;
+            }
+            throw new ServiceException("同源组内没有可点播的入站来源");
+        }
+
+        if (!chosen.row().getId().equals(rowId)) {
+            log.info("[{}] 同源选路切换 请求行={} 实际行={} code={}",
+                    LOG_TAG, rowId, chosen.row().getId(), chosen.row().getCode());
+        }
+        PlayResultResponse result = invite(chosen.device(), chosen.deviceId(), chosen.row().getCode(),
+                req.getTransport(), req.getStreamNumber(), LOG_TAG + "(入站)");
+        result.setSourceChannelRowId(String.valueOf(chosen.row().getId()));
+        return result;
+    }
+
+    /**
+     * 单条入站候选的前置校验（原 startInbound 的全部校验，抽出来供同源选路逐条尝试）。
+     */
+    private PreparedInbound prepareInbound(ResChannel row) {
+        if ("REMOVED".equals(row.getStatus())) {
+            throw new ServiceException("通道已消失，无法点播");
+        }
+        if (row.getOnlineStatus() != null && !"ON".equalsIgnoreCase(row.getOnlineStatus())) {
+            throw new ServiceException("通道离线，无法点播");
+        }
+        if (row.getCode() == null || row.getCode().isBlank()) {
+            throw new ServiceException("通道缺少可点播的编码");
+        }
+        if (row.getSourcePlatformId() == null || row.getSourcePlatformId() <= 0) {
+            throw new ServiceException("通道缺少来源平台，无法点播");
+        }
+
+        Platform platform = platformMapper.selectById(row.getSourcePlatformId());
+        if (platform == null) {
+            throw new ServiceException("通道来源平台不存在，无法点播");
+        }
+        if (Platform.STATUS_DISABLED.equals(platform.getStatus())) {
+            throw new ServiceException("来源平台已停用，无法点播");
+        }
+
+        String deviceId = platform.getCode();
+        if (deviceId == null || deviceId.isBlank()) {
+            throw new ServiceException("来源平台未配置国标编码，无法点播");
+        }
+        GbDevice device = deviceMapper.selectOne(
+                new LambdaQueryWrapper<GbDevice>().eq(GbDevice::getDeviceId, deviceId));
+        if (device == null) {
+            throw new ServiceException("PLATFORM_NOT_REGISTERED: 对端平台未注册 " + deviceId);
+        }
+        if (device.getStatus() == null || device.getStatus() != 1) {
+            throw new ServiceException("PLATFORM_OFFLINE: 对端平台不在线 " + deviceId);
+        }
+        return new PreparedInbound(device, deviceId, row);
+    }
+
+    /** 通过前置校验的一条入站链路（device 是对端平台的 gb_device 行） */
+    private record PreparedInbound(GbDevice device, String deviceId, ResChannel row) {
+    }
+
+    /**
+     * 真正的邀请流程：本地设备与入站通道共用，前置校验由调用方完成。
+     */
+    private PlayResultResponse invite(GbDevice device, String deviceId, String channelId,
+                                      String transportReq, String streamNumberReq, String logTag) {
+        String rawToken = rawStreamNumber(streamNumberReq);
+        String streamNumber = normalizeStreamNumber(streamNumberReq);
+        log.info("[{}] 收到点播请求 设备:{} 通道:{} 码流:{}",
+                logTag, deviceId, channelId, streamLabel(streamNumber));
+        String streamId = buildStreamId(deviceId, channelId, streamNumber);
 
         // 幂等：以 streamId（= 通道 + 码流）为粒度判定，不同码流互不影响
         GbInviteSession existing = inviteSessionService.getByStreamId(streamId);
         if (existing != null) {
             if (GbInviteSession.STATUS_READY.equals(existing.getStatus())) {
                 if (streamStillOnline(existing)) {
-                    log.info("[实时点播] 复用已就绪会话 流ID:{} 码流:{}", streamId, streamLabel(streamNumber));
+                    log.info("[{}] 复用已就绪会话 流ID:{} 码流:{}", logTag, streamId, streamLabel(streamNumber));
                     return withViewToken(toResult(existing));
                 }
                 // 接管来的会话可能已经死在 ZLM 上（节点重启、流被外部关掉），清掉重拉，
                 // 不然前端拿到地址也是黑屏
-                inviteCleanup.failAndBye(existing, LOG_TAG, "复用会话时流已不在");
+                inviteCleanup.failAndBye(existing, logTag, "复用会话时流已不在");
             }
             if (GbInviteSession.STATUS_INVITING.equals(existing.getStatus())) {
                 // 同通道同码流正在邀请中，告诉前端稍候，不要重复发起 INVITE 导致重复流
@@ -136,8 +270,40 @@ public class GbPlayServiceImpl implements GbPlayService {
             }
         }
 
+        // 每跳独立互斥（6.6 / T5.3）：这里只锁"入站取流腿"——一路源流只该被拉一次，
+        // 所有上级共享它，所以按 streamId 独占。出站推流腿按「上级 + 通道」各持一把锁，
+        // 由 CascadeSendService 负责，上级 A 的失败不会把上级 B 一起锁住。
+        String hopKey = MediaHopGuard.inboundKey(streamId);
+        long coolingMs = mediaHopGuard.cooldownRemainingMs(hopKey);
+        if (coolingMs > 0) {
+            long seconds = Math.max(1L, (coolingMs + 999L) / 1000L);
+            log.warn("[{}] 入站取流冷却中 流ID:{} 剩余:{}s", logTag, streamId, seconds);
+            throw new ServiceException("该通道刚点播失败，请 " + seconds + " 秒后再试");
+        }
+        if (!mediaHopGuard.tryAcquire(hopKey)) {
+            log.warn("[{}] 入站取流已有请求在飞 流ID:{}", logTag, streamId);
+            throw new ServiceException("该通道正在请求点播，请稍后重试");
+        }
+        try {
+            return doInvite(device, deviceId, channelId, streamId, streamNumber, rawToken,
+                    transportReq, logTag);
+        } catch (RuntimeException e) {
+            // 失败置冷却：设备卡死时前端/上级会按秒级重试，不能让每次重试都等满点播超时
+            mediaHopGuard.cooldown(hopKey, sipProperties.getCascade().getHopCooldownSec() * 1000L);
+            throw e;
+        } finally {
+            mediaHopGuard.release(hopKey);
+        }
+    }
+
+    /**
+     * 取流主体（不含互斥与冷却），由 {@link #invite} 在持有入站取流腿之后调用。
+     */
+    private PlayResultResponse doInvite(GbDevice device, String deviceId, String channelId, String streamId,
+                                        String streamNumber, String rawToken, String transportReq,
+                                        String logTag) {
         MediaServer server = mediaServerSelector.pick();
-        String transport = SdpBuilder.normalizeTransport(req.getTransport());
+        String transport = SdpBuilder.normalizeTransport(transportReq);
 
         String ssrc = ssrcFactory.acquire(server.getServerId(), false);
         int rtpPort;
@@ -161,8 +327,8 @@ public class GbPlayServiceImpl implements GbPlayService {
         GbInviteSession session = new GbInviteSession();
         session.setStreamId(streamId);
         session.setServerId(server.getServerId());
-        session.setDeviceId(req.getDeviceId());
-        session.setChannelId(req.getChannelId());
+        session.setDeviceId(deviceId);
+        session.setChannelId(channelId);
         session.setSsrc(ssrc);
         session.setRtpPort(rtpPort);
         session.setTransport(transport);
@@ -183,12 +349,12 @@ public class GbPlayServiceImpl implements GbPlayService {
             String sdpBody = SdpBuilder.buildPlay(sipProperties.getId(), sdpIp, rtpPort, ssrc, transport, rawToken);
             long inviteTimeoutMs = Math.max(5_000L, mediaProperties.getInviteTimeoutSeconds() * 1000L);
 
-            sipCommander.sendInvite(device, req.getChannelId(), sdpBody, ssrc, rtpPort, callIdHeader, fromTag,
-                    okEv -> log.debug("[实时点播] 收到 INVITE 2xx 流ID:{}", streamId),
+            sipCommander.sendInvite(device, channelId, sdpBody, ssrc, rtpPort, callIdHeader, fromTag,
+                    okEv -> log.debug("[{}] 收到 INVITE 2xx 流ID:{}", logTag, streamId),
                     errEv -> {
                         int code = errEv == null || errEv.getResponse() == null
                                 ? -1 : errEv.getResponse().getStatusCode();
-                        inviteCleanup.failSession(session, LOG_TAG, "INVITE 失败 status=" + code);
+                        inviteCleanup.failSession(session, logTag, "INVITE 失败 status=" + code);
                         CompletableFuture<PlayResultResponse> f = pending.remove(streamId);
                         if (f != null) {
                             f.completeExceptionally(new ServiceException("INVITE 失败 status=" + code));
@@ -197,7 +363,7 @@ public class GbPlayServiceImpl implements GbPlayService {
                     inviteTimeoutMs);
         } catch (Exception e) {
             pending.remove(streamId);
-            inviteCleanup.failSession(session, LOG_TAG, "INVITE 异常: " + e.getMessage());
+            inviteCleanup.failSession(session, logTag, "INVITE 异常: " + e.getMessage());
             throw new ServiceException("INVITE 异常: " + e.getMessage());
         }
 
@@ -206,12 +372,12 @@ public class GbPlayServiceImpl implements GbPlayService {
             return withViewToken(future.get(mediaProperties.getInviteTimeoutSeconds(), TimeUnit.SECONDS));
         } catch (TimeoutException e) {
             pending.remove(streamId);
-            inviteCleanup.timeoutSession(session, LOG_TAG, "等待流就绪超时");
+            inviteCleanup.timeoutSession(session, logTag, "等待流就绪超时");
             throw new ServiceException("点播超时");
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             pending.remove(streamId);
-            inviteCleanup.failSession(session, LOG_TAG, "等待被中断");
+            inviteCleanup.failSession(session, logTag, "等待被中断");
             throw new ServiceException("等待被中断");
         } catch (ExecutionException e) {
             pending.remove(streamId);
